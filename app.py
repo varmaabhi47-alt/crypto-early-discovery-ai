@@ -55,6 +55,27 @@ async def enrich_token(client: httpx.AsyncClient, token: dict):
     liquidity = pair.get("liquidity") or {}
     volume = pair.get("volume") or {}
 
+    liquidity_usd = float(liquidity.get("usd") or 0)
+    volume_24h = float(volume.get("h24") or 0)
+    buys = int(h24.get("buys") or 0)
+    sells = int(h24.get("sells") or 0)
+    change_24h = price_change.get("h24")
+    try:
+        change_24h = float(change_24h) if change_24h is not None else 0.0
+    except (TypeError, ValueError):
+        change_24h = 0.0
+    # Transparent, experimental screening heuristic; not a probability or buy signal.
+    import math
+    liquidity_score = min(100.0, max(0.0, (math.log10(max(liquidity_usd, 1) / 100) / 4) * 100))
+    turnover_score = min(100.0, max(0.0, (volume_24h / max(liquidity_usd, 1)) * 50))
+    trade_total = buys + sells
+    flow_score = (buys / trade_total * 100) if trade_total else 50.0
+    momentum_score = min(100.0, max(0.0, 50.0 + change_24h * 2.0))
+    opportunity_score = round(
+        liquidity_score * 0.30 + turnover_score * 0.25 +
+        flow_score * 0.25 + momentum_score * 0.20, 1
+    )
+
     return {
         "name": (pair.get("baseToken") or {}).get("name") or token.get("description") or "Unknown",
         "symbol": (pair.get("baseToken") or {}).get("symbol") or "—",
@@ -63,11 +84,13 @@ async def enrich_token(client: httpx.AsyncClient, token: dict):
         "url": pair.get("url") or token.get("url"),
         "dex": pair.get("dexId") or "Unknown",
         "price_usd": pair.get("priceUsd"),
-        "liquidity_usd": liquidity.get("usd") or 0,
-        "volume_24h_usd": volume.get("h24") or 0,
+        "liquidity_usd": liquidity_usd,
+        "volume_24h_usd": volume_24h,
+        "opportunity_score": opportunity_score,
+        "score_components": {"liquidity": round(liquidity_score, 1), "turnover": round(turnover_score, 1), "buy_flow": round(flow_score, 1), "momentum": round(momentum_score, 1)},
         "price_change_24h_pct": price_change.get("h24"),
-        "buys_24h": h24.get("buys") or 0,
-        "sells_24h": h24.get("sells") or 0,
+        "buys_24h": buys,
+        "sells_24h": sells,
         "boost_amount": token.get("amount") or 0,
         "boost_total": token.get("totalAmount") or 0,
         "image": token.get("icon") or token.get("header"),
@@ -107,7 +130,7 @@ async def discover():
         )
 
     tokens = [item for item in results if isinstance(item, dict)]
-    tokens.sort(key=lambda item: item["liquidity_usd"], reverse=True)
+    tokens.sort(key=lambda item: item["opportunity_score"], reverse=True)
     _cache["at"] = now
     _cache["data"] = tokens
     return tokens, False
