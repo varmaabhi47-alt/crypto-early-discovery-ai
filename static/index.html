@@ -121,7 +121,7 @@ async function load(){
     const data=await response.json();
     if(!response.ok) {
       const detail=data.detail;
-      const message=typeof detail==="string" ? detail : detail?.message || JSON.stringify(detail || "Unable to load discovery data");
+      const message=typeof detail==="string" ? detail : JSON.stringify(detail || "Unable to load discovery data");
       throw new Error(message);
     }
     const tokens=data.tokens||[];
