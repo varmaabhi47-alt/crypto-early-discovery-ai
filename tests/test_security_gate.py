@@ -43,7 +43,7 @@ class DiscoverySecurityGateTests(unittest.IsolatedAsyncioTestCase):
             {"mint": f"filler_{i}", "opportunity_score": 50 - i}
             for i in range(6)
         )
-        tokens.append({"mint": "unassessed", "opportunity_score": 5000})
+        tokens.append({"mint": "unassessed", "opportunity_score": -100})
 
         with patch.object(app, "assess_discovery_security", new=AsyncMock(side_effect=fake_assessment)):
             result = await app.apply_discovery_security_gate(object(), tokens)
