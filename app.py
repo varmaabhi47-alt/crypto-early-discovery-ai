@@ -323,6 +323,52 @@ def update_paper_log(tokens: list[dict]):
                 }
 
 
+_discovery_security_cache: dict[str, Any] = {}
+
+
+async def assess_discovery_security(client: httpx.AsyncClient, token: dict):
+    """Fetch/cache RugCheck for a bounded discovery shortlist; failure stays unknown."""
+    mint = token.get("address")
+    if not mint:
+        return {"status": "unavailable", "classification": "unknown", "shortlist_action": "hold_security_unknown"}
+    now = time.time()
+    cached = _discovery_security_cache.get(mint)
+    if cached and now - cached["at"] < SECURITY_CACHE_TTL:
+        return cached["data"]
+    try:
+        async with _semaphore:
+            response = await client.get(f"{RUGCHECK}/v1/tokens/{mint}/report/summary")
+        if response.status_code != 200:
+            raise httpx.HTTPStatusError("RugCheck unavailable", request=response.request, response=response)
+        raw = response.json()
+        if not isinstance(raw, dict):
+            raise ValueError("Unexpected RugCheck response")
+        risks = raw.get("risks") if isinstance(raw.get("risks"), list) else []
+        danger_count = sum(
+            1 for item in risks
+            if isinstance(item, dict) and str(item.get("level", "")).lower() == "danger"
+        )
+        classification = (
+            "critical_review_required" if danger_count else
+            "warnings_present" if risks else
+            "no_reported_risks_not_proof_of_safety"
+        )
+        data = {
+            "status": "assessed",
+            "classification": classification,
+            "critical_risk_count": danger_count,
+            "risk_count": len([item for item in risks if isinstance(item, dict)]),
+            "shortlist_action": (
+                "exclude_from_positive_shortlist_pending_manual_review"
+                if danger_count else "manual_review_required"
+            ),
+        }
+        _discovery_security_cache[mint] = {"at": now, "data": data}
+        return data
+    except (httpx.HTTPError, ValueError, TypeError):
+        return {"status": "unavailable", "classification": "unknown", "shortlist_action": "hold_security_unknown"}
+
+
 async def discover():
     now = time.time()
     if now - _cache["at"] < CACHE_TTL and _cache["data"]:
@@ -405,7 +451,41 @@ async def discover():
         )
 
     tokens = [item for item in results if isinstance(item, dict)]
+
+    # Security-check only the ten strongest market-data candidates to bound provider calls.
+    # Every other token remains ineligible for positive shortlist status until assessed.
     tokens.sort(key=lambda item: item["opportunity_score"], reverse=True)
+    for token in tokens:
+        token.update({
+            "security_status": "not_assessed",
+            "security_risk_classification": "unknown",
+            "critical_risk_count": None,
+            "shortlist_eligible": False,
+            "shortlist_action": "hold_pending_security_check",
+        })
+    top_candidates = tokens[:10]
+    security_results = await asyncio.gather(
+        *(assess_discovery_security(client, token) for token in top_candidates),
+        return_exceptions=True
+    )
+    for token, assessment in zip(top_candidates, security_results):
+        if isinstance(assessment, BaseException):
+            assessment = {"status": "unavailable", "classification": "unknown",
+                          "shortlist_action": "hold_security_unknown"}
+        token["security_status"] = assessment["status"]
+        token["security_risk_classification"] = assessment["classification"]
+        token["critical_risk_count"] = assessment.get("critical_risk_count")
+        token["shortlist_action"] = assessment["shortlist_action"]
+        # "Eligible" means eligible for human review, never an automatic buy signal.
+        token["shortlist_eligible"] = (
+            assessment["status"] == "assessed"
+            and assessment["critical_risk_count"] == 0
+        )
+    tokens.sort(key=lambda item: (
+        0 if item.get("shortlist_eligible") else
+        2 if item.get("security_risk_classification") == "critical_review_required" else 1,
+        -item["opportunity_score"]
+    ))
     _cache["at"] = now
     _cache["data"] = tokens
     _cache["sources"] = sources
@@ -434,6 +514,10 @@ async def api_discover(
         "data_sources": data_sources,
         "count": len(filtered[:limit]),
         "tokens": filtered[:limit],
+        "security_gate": {
+            "assessed_candidates": min(10, len(tokens)),
+            "policy": "Critical danger findings are excluded from positive review ranking. Unassessed or unavailable security reports are held back. Review eligibility is not a buy signal."
+        },
         "disclaimer": "Discovery data is informational, can be delayed or incomplete, and is not a buy recommendation.",
         "screening_note": "Flags are market-data cautions only, not scam findings or proof of safety."
     }
