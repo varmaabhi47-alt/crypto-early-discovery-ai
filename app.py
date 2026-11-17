@@ -294,6 +294,77 @@ def screening_flags(token: dict) -> list[str]:
     return flags
 
 
+def apply_risk_adjusted_ranking(token: dict) -> dict:
+    """Add a transparent, conservative screening score; not a return prediction."""
+    base = float(token.get("opportunity_score") or 0)
+    flags = screening_flags(token)
+    penalty = 0.0
+    reasons = []
+
+    liquidity = float(token.get("liquidity_usd") or 0)
+    volume = float(token.get("volume_24h_usd") or 0)
+    if liquidity < 5000:
+        penalty += 15
+        reasons.append("Very low liquidity")
+    elif liquidity < 15000:
+        penalty += 8
+        reasons.append("Limited liquidity")
+
+    turnover = volume / liquidity if liquidity > 0 else None
+    if turnover is not None and turnover > 20:
+        penalty += 15
+        reasons.append("Extreme volume/liquidity ratio")
+    elif turnover is not None and turnover > 10:
+        penalty += 8
+        reasons.append("Elevated volume/liquidity ratio")
+
+    buys = int(token.get("buys_24h") or 0)
+    sells = int(token.get("sells_24h") or 0)
+    if buys + sells >= 20 and min(buys, sells) > 0 and max(buys, sells) / min(buys, sells) > 10:
+        penalty += 8
+        reasons.append("Severe buy/sell imbalance")
+
+    try:
+        change = float(token.get("price_change_24h_pct"))
+        if change <= -30:
+            penalty += 15
+            reasons.append("Sharp 24h price decline")
+    except (TypeError, ValueError):
+        pass
+
+    organic = (token.get("score_components") or {}).get("organic")
+    try:
+        if organic is not None and float(organic) < 30:
+            penalty += 8
+            reasons.append("Low organic score")
+    except (TypeError, ValueError):
+        pass
+
+    security = token.get("security_status")
+    classification = token.get("security_risk_classification")
+    if classification == "critical_review_required":
+        penalty += 35
+        reasons.append("Critical security findings reported")
+    elif security != "assessed":
+        penalty += 12
+        reasons.append("Security assessment unavailable or pending")
+    elif classification == "warnings_present":
+        penalty += 8
+        reasons.append("Security warnings reported")
+    # A clean/empty third-party report earns no bonus: absence of reported risks is not proof of safety.
+
+    adjusted = round(max(0.0, min(100.0, base - penalty)), 1)
+    token["risk_adjusted_score"] = adjusted
+    token["risk_adjustment_points"] = round(penalty, 1)
+    token["risk_adjustment_reasons"] = reasons or ["No configured screening penalty triggered"]
+    token["ranking_label"] = (
+        "Higher relative screen" if adjusted >= 70 else
+        "Moderate relative screen" if adjusted >= 45 else
+        "Lower relative screen"
+    )
+    return token
+
+
 async def supabase_request(method: str, table: str, *, params=None, payload=None):
     """Server-side Supabase REST helper. Requires secrets configured on the host."""
     base_url = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -488,10 +559,12 @@ async def apply_discovery_security_gate(client: httpx.AsyncClient, tokens: list[
             assessment["status"] == "assessed"
             and assessment.get("critical_risk_count") == 0
         )
+    for token in tokens:
+        apply_risk_adjusted_ranking(token)
     tokens.sort(key=lambda item: (
         0 if item.get("shortlist_eligible") else
         2 if item.get("security_risk_classification") == "critical_review_required" else 1,
-        -item["opportunity_score"]
+        -item["risk_adjusted_score"]
     ))
     return tokens
 
