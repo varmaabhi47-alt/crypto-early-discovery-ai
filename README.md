@@ -10,6 +10,22 @@ A read-only crypto intelligence terminal, starting with Solana.
 - Displays available normalized score, LP locked percentage, and reported risk items.
 - Caches market discovery briefly and security summaries locally for one hour to reduce repeated calls.
 
+## Opportunity ranking (experimental)
+
+Each discovered token receives an explainable screening score from 0 to 100:
+- Liquidity: 30%
+- 24-hour volume relative to liquidity: 25%
+- Buy share of reported 24-hour trades: 25%
+- 24-hour price momentum: 20%
+
+This is an unvalidated heuristic, not a probability, financial advice, or a buy signal. It currently has no historical predictive validation, does not include security risk in the numerical score, and should be treated as a sorting aid only. Review the separate RugCheck report and holder analysis; unknown data must not be interpreted as safe.
+
+## Deployment
+
+A Render blueprint is included in `render.yaml`. The free web-service tier can be used for a public test deployment without a payment card, but it sleeps after 15 minutes without traffic and is not 24/7 hosting. A continuously running free VM such as Oracle Cloud Always Free may be an option only if the user can complete Oracle's required payment-card verification and capacity is available. Do not upgrade to paid resources under the ₹0 budget.
+
+A GitHub Actions workflow in `.github/workflows/ci.yml` checks Python compilation and imports on pushes and pull requests. A successful CI run is not the same as a live deployment or a live-provider integration test.
+
 ## Run locally
 
 Requires Python 3.10 or newer.
