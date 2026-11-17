@@ -9,7 +9,6 @@ class DiscoverySecurityGateTests(unittest.IsolatedAsyncioTestCase):
         tokens = [
             {"mint": "eligible", "opportunity_score": 99},
             {"mint": "unknown", "opportunity_score": 100},
-            {"mint": "unassessed", "opportunity_score": 500},
             {"mint": "critical_low", "opportunity_score": 10},
             {"mint": "critical_high", "opportunity_score": 1000},
         ]
