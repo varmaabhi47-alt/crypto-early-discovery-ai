@@ -1,18 +1,22 @@
 import asyncio
+import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pathlib import Path
 
-app = FastAPI(title="Crypto Early Discovery AI", version="0.1.0")
-BASE = "https://api.dexscreener.com"
+app = FastAPI(title="Crypto Early Discovery AI", version="0.2.0")
+DEX = "https://api.dexscreener.com"
+RUGCHECK = "https://api.rugcheck.xyz"
 CACHE_TTL = 60
+SECURITY_CACHE_TTL = 3600
 _cache: dict[str, Any] = {"at": 0.0, "data": []}
+_security_cache: dict[str, Any] = {}
 _semaphore = asyncio.Semaphore(5)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -35,24 +39,16 @@ async def enrich_token(client: httpx.AsyncClient, token: dict):
         return None
     async with _semaphore:
         try:
-            pairs = await get_json(
-                client, f"{BASE}/token-pairs/v1/solana/{address}"
-            )
+            pairs = await get_json(client, f"{DEX}/token-pairs/v1/solana/{address}")
         except (httpx.HTTPError, ValueError):
             return None
 
     if not isinstance(pairs, list) or not pairs:
         return None
-
-    # Prefer the pair with the deepest reported liquidity.
     pairs = [p for p in pairs if isinstance(p, dict)]
     if not pairs:
         return None
-    pair = max(
-        pairs,
-        key=lambda p: (p.get("liquidity") or {}).get("usd") or 0
-    )
-
+    pair = max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0)
     txns = pair.get("txns") or {}
     h24 = txns.get("h24") or {}
     price_change = pair.get("priceChange") or {}
@@ -87,18 +83,15 @@ async def discover():
         return _cache["data"], True
 
     timeout = httpx.Timeout(12.0, connect=6.0)
-    headers = {"User-Agent": "CryptoEarlyDiscoveryAI/0.1"}
+    headers = {"User-Agent": "CryptoEarlyDiscoveryAI/0.2"}
     async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
         try:
             profiles, boosts = await asyncio.gather(
-                get_json(client, f"{BASE}/token-profiles/latest/v1"),
-                get_json(client, f"{BASE}/token-boosts/latest/v1"),
+                get_json(client, f"{DEX}/token-profiles/latest/v1"),
+                get_json(client, f"{DEX}/token-boosts/latest/v1"),
             )
         except httpx.HTTPError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail="The public market-data provider is temporarily unavailable."
-            ) from exc
+            raise HTTPException(status_code=502, detail="The public market-data provider is temporarily unavailable.") from exc
 
         combined = {}
         for item in (profiles or []) + (boosts or []):
@@ -140,3 +133,56 @@ async def api_discover(
         "tokens": filtered[:limit],
         "disclaimer": "Discovery data is informational, can be delayed or incomplete, and is not a buy recommendation."
     }
+
+
+@app.get("/api/security/{mint}")
+async def api_security(mint: str):
+    # Solana public keys are base58 strings; reject malformed input before network access.
+    if not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", mint):
+        raise HTTPException(status_code=400, detail="Invalid Solana mint address format.")
+
+    now = time.time()
+    cached = _security_cache.get(mint)
+    if cached and now - cached["at"] < SECURITY_CACHE_TTL:
+        return {**cached["data"], "cached": True}
+
+    url = f"{RUGCHECK}/v1/tokens/{mint}/report/summary"
+    timeout = httpx.Timeout(15.0, connect=6.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout, headers={"Accept": "application/json"}) as client:
+            response = await client.get(url)
+            if response.status_code == 404:
+                raise HTTPException(status_code=404, detail="No cached RugCheck report is available for this token.")
+            if response.status_code == 429:
+                raise HTTPException(status_code=429, detail="RugCheck rate limit reached. Please wait before retrying.")
+            response.raise_for_status()
+            raw = response.json()
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="RugCheck is temporarily unavailable or returned an unreadable response.") from exc
+
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=502, detail="Unexpected security report format.")
+
+    risks = raw.get("risks") if isinstance(raw.get("risks"), list) else []
+    report = {
+        "mint": mint,
+        "source": "RugCheck",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "score_normalised": raw.get("score_normalised"),
+        "score_raw": raw.get("score"),
+        "lp_locked_pct": raw.get("lpLockedPct"),
+        "risks": [
+            {
+                "name": item.get("name", "Unnamed risk"),
+                "level": item.get("level", "unknown"),
+                "value": item.get("value", ""),
+                "description": item.get("description", "")
+            }
+            for item in risks if isinstance(item, dict)
+        ],
+        "note": "A cached third-party heuristic report, not a guarantee of safety. Missing fields mean unknown, not safe."
+    }
+    _security_cache[mint] = {"at": now, "data": report}
+    return {**report, "cached": False}
