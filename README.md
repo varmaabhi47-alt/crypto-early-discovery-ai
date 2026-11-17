@@ -2,20 +2,40 @@
 
 A read-only crypto intelligence terminal, starting with Solana.
 
-## Planned capabilities
+## Current milestone: Solana discovery MVP
 
-- Discover new tokens and liquidity pools
-- Track liquidity, volume, price momentum, and buy/sell activity
-- Surface token and liquidity risk signals
-- Add explainable opportunity rankings
-- Track paper-trading outcomes at 1h, 6h, 24h, and 7d
+- Fetches the latest public token profiles and boosts from DexScreener.
+- Enriches Solana token addresses with available pair data.
+- Displays price, liquidity, 24-hour volume, price movement, and buy/sell counts.
+- Uses a short in-memory cache to reduce repeated public API requests.
+- Clearly labels security status as **Not assessed**.
 
-## Safety and cost principles
+## Run locally
 
-- ₹0 budget: no paid hosting, APIs, or subscriptions
-- Read-only market intelligence; no private wallet keys or automatic real-money trades
-- Paper trading only until the system is independently validated
+Requires Python 3.10 or newer.
 
-## Status
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app:app --host 127.0.0.1 --port 8000
+```
 
-Project initialized. Features will be added incrementally and documented as they are implemented.
+Open http://127.0.0.1:8000 in a browser.
+
+On Windows, activate the environment with `.venv\\Scripts\\activate`.
+
+## API
+
+- `GET /api/health`
+- `GET /api/discover?min_liquidity=0&limit=30`
+
+## Data and cost
+
+- Uses public DexScreener API endpoints; provider limits and availability can change.
+- No paid API, hosting, subscription, or database is required for this local prototype.
+- No private wallet keys, wallet connection, or real-money execution.
+
+## Important limitations
+
+This is an early discovery dashboard, not a trading signal or investment recommendation. Token promotions can be misleading. Security checks, holder concentration, whale-wallet intelligence, social intelligence, explainable scoring, persistent storage, and paper-trading evaluation are not implemented yet. Do not interpret missing security data as a safe token.
