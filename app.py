@@ -18,6 +18,7 @@ GECKO = "https://api.geckoterminal.com/api/v2"
 CACHE_TTL = 60
 SECURITY_CACHE_TTL = 3600
 _cache: dict[str, Any] = {"at": 0.0, "data": []}
+_launch_cache: dict[str, Any] = {"at": 0.0, "data": []}
 _security_cache: dict[str, Any] = {}
 _paper_log: dict[str, Any] = {}
 PAPER_HORIZONS = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
@@ -569,6 +570,43 @@ async def apply_discovery_security_gate(client: httpx.AsyncClient, tokens: list[
     return tokens
 
 
+def pool_age_hours(created_at: Any, now: float | None = None):
+    """Return age in hours from a provider's pool-creation timestamp, or None."""
+    if created_at is None:
+        return None
+    try:
+        if isinstance(created_at, (int, float)):
+            timestamp = float(created_at)
+            if timestamp > 10_000_000_000:
+                timestamp /= 1000.0
+            created = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        else:
+            value = str(created_at).strip()
+            if not value:
+                return None
+            created = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            created = created.astimezone(timezone.utc)
+        current = datetime.fromtimestamp(now if now is not None else time.time(), tz=timezone.utc)
+        return round(max(0.0, (current - created).total_seconds() / 3600.0), 2)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def launch_stage(age_hours: float | None):
+    """Human-readable pool-age band; it is not a token mint-age claim."""
+    if age_hours is None:
+        return "Age unavailable"
+    if age_hours <= 1:
+        return "Just launched"
+    if age_hours <= 6:
+        return "Very early"
+    if age_hours <= 24:
+        return "Early"
+    return "Older pool"
+
+
 async def discover():
     now = time.time()
     if now - _cache["at"] < CACHE_TTL and _cache["data"]:
@@ -692,6 +730,53 @@ async def api_discover(
         "disclaimer": "Discovery data is informational, can be delayed or incomplete, and is not a buy recommendation.",
         "screening_note": "Flags are market-data cautions only, not scam findings or proof of safety."
     }
+
+
+
+@app.get("/api/launches")
+async def api_launches(
+    window_hours: float = Query(24, gt=0, le=24),
+    limit: int = Query(30, ge=1, le=30)
+):
+    """Return the newest pools visible in GeckoTerminal's current feed."""
+    now = time.time()
+    if now - _launch_cache["at"] >= CACHE_TTL or not _launch_cache["data"]:
+        timeout = httpx.Timeout(12.0, connect=6.0)
+        headers = {"User-Agent": "CryptoEarlyDiscoveryAI/0.3"}
+        try:
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                launches = await discover_gecko(client)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="The GeckoTerminal new-pools feed is temporarily unavailable."
+            ) from exc
+        for token in launches:
+            age = pool_age_hours(token.get("pair_created_at"), now)
+            token["pool_age_hours"] = age
+            token["launch_stage"] = launch_stage(age)
+            token["age_basis"] = "pool creation time"
+        launches = [t for t in launches if t.get("pool_age_hours") is not None]
+        launches.sort(key=lambda t: t["pool_age_hours"])
+        _launch_cache["at"] = now
+        _launch_cache["data"] = launches
+
+    selected = [
+        token for token in _launch_cache["data"]
+        if token["pool_age_hours"] <= window_hours
+    ][:limit]
+    return {
+        "chain": "Solana",
+        "source": "GeckoTerminal new-pools feed",
+        "window_hours": window_hours,
+        "count": len(selected),
+        "launches": selected,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "age_definition": "Age is measured from pool creation, not token mint creation.",
+        "coverage_note": "This is the provider's current new-pools feed, not a complete historical index. Some new pools may be absent, and timestamps/prices can be delayed or unavailable.",
+        "disclaimer": "Newness is not a quality or safety signal. Do not treat this list as a buy recommendation."
+    }
+
 
 
 
