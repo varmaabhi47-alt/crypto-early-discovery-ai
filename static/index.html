@@ -158,7 +158,8 @@ async function load(){
       const mint=escapeHtml(t.address);
       return '<tr><td><div class="token">'+icon+'<div><b>'+escapeHtml(title)+'</b><small>'+escapeHtml(t.dex||"Unknown DEX")+' · '+link+'</small></div></div></td><td><strong>'+Number(t.opportunity_score??0).toFixed(1)+'</strong><br><small class="muted">/100 · experimental</small></td><td>'+price(t.price_usd)+'</td><td>'+money(t.liquidity_usd)+'</td><td>'+money(t.volume_24h_usd)+'</td><td class="'+cls+'">'+changeText+'</td><td>'+fmt(t.buys_24h)+' / '+fmt(t.sells_24h)+'</td><td><button class="smallbtn" onclick="auditToken(\''+mint+'\',this)">Check security</button> <button class="smallbtn" onclick="holderToken(\''+mint+'\',this)">Holder analysis</button><div class="flag">'+(t.screening_flags||[]).map(escapeHtml).join("<br>")+(t.screening_flags&&t.screening_flags.length?"":"No market-data caution flags")+'</div><div class="audit" id="audit-'+mint+'">Not checked yet</div></td></tr>';
     }).join(""):'<tr><td colspan="7" class="muted">No matching tokens returned. Try lowering the liquidity filter or refresh later.</td></tr>';
-    status.textContent="Showing public Solana pairs. "+(data.cached?"Cached response.":"Fresh provider response.")+" Flags are cautions, not scam verdicts.";\n    await loadPaper();
+    status.textContent="Showing public Solana pairs. "+(data.cached?"Cached response.":"Fresh provider response.")+" Flags are cautions, not scam verdicts.";
+    await loadPaper();
   }catch(error){
     status.textContent="Could not load data: "+error.message;
     document.getElementById("rows").innerHTML='<tr><td colspan="8" class="muted">Live data could not be loaded: '+escapeHtml(error.message)+'. Tap Refresh discovery to retry.</td></tr>';
