@@ -31,7 +31,7 @@
     <div><h1>Crypto Early Discovery AI</h1><p class="sub">Solana market discovery · read-only intelligence</p></div>
     <span class="pill">● PAPER / READ-ONLY</span>
   </header>
-  <div class="notice">Experimental rank combines liquidity (30%), volume/liquidity (25%), buy-flow (25%) and 24h momentum (20%). It is an unvalidated screening heuristic, not a probability or buy signal. Early discovery is not a prediction. Security reports are fetched only when you request them and may be cached by the provider. A missing report is unknown, not safe. This is not a buy recommendation.</div>
+  <div class="notice">Base score combines liquidity (30%), volume/liquidity (25%), buy-flow (25%) and 24h momentum (20%). Risk-adjusted score subtracts transparent penalties for thin liquidity, extreme turnover, severe trade imbalance, sharp declines and security uncertainty/warnings. Both are experimental screening heuristics, not probabilities or buy signals. Early discovery is not a prediction. Security reports are fetched only when you request them and may be cached by the provider. A missing report is unknown, not safe. This is not a buy recommendation.</div>
   <section class="controls">
     <label for="minliq">Minimum liquidity (USD)</label>
     <input id="minliq" type="number" min="0" step="100" value="0">
@@ -51,7 +51,7 @@
   </section>
   <div class="tablewrap">
     <table>
-      <thead><tr><th>Token</th><th>Rank score</th><th>Price (USD)</th><th>Liquidity</th><th>Volume 24h</th><th>24h change</th><th>Buys / sells</th><th>Screening cautions / security</th></tr></thead>
+      <thead><tr><th>Token</th><th>Base / risk-adjusted rank</th><th>Price (USD)</th><th>Liquidity</th><th>Volume 24h</th><th>24h change</th><th>Buys / sells</th><th>Screening cautions / security</th></tr></thead>
       <tbody id="rows"><tr><td colspan="8" class="muted">Waiting for data…</td></tr></tbody>
     </table>
   </div>
@@ -156,7 +156,7 @@ async function load(){
       const icon=t.image?'<img src="'+escapeHtml(t.image)+'" alt="" loading="lazy" onerror="this.style.display=\'none\'">':'';
       const link=t.url?'<a href="'+escapeHtml(t.url)+'" target="_blank" rel="noopener noreferrer">View pair ↗</a>':'—';
       const mint=escapeHtml(t.address);
-      return '<tr><td><div class="token">'+icon+'<div><b>'+escapeHtml(title)+'</b><small>'+escapeHtml(t.dex||"Unknown DEX")+' · '+link+'</small></div></div></td><td><strong>'+Number(t.opportunity_score??0).toFixed(1)+'</strong><br><small class="muted">/100 · experimental</small></td><td>'+price(t.price_usd)+'</td><td>'+money(t.liquidity_usd)+'</td><td>'+money(t.volume_24h_usd)+'</td><td class="'+cls+'">'+changeText+'</td><td>'+fmt(t.buys_24h)+' / '+fmt(t.sells_24h)+'</td><td><button class="smallbtn" onclick="auditToken(\''+mint+'\',this)">Check security</button> <button class="smallbtn" onclick="holderToken(\''+mint+'\',this)">Holder analysis</button><div class="flag">'+(t.screening_flags||[]).map(escapeHtml).join("<br>")+(t.screening_flags&&t.screening_flags.length?"":"No market-data caution flags")+'</div><div class="audit" id="audit-'+mint+'">Not checked yet</div></td></tr>';
+      return '<tr><td><div class="token">'+icon+'<div><b>'+escapeHtml(title)+'</b><small>'+escapeHtml(t.dex||"Unknown DEX")+' · '+link+'</small></div></div></td><td><strong>'+Number(t.risk_adjusted_score??t.opportunity_score??0).toFixed(1)+'</strong><br><small class="muted">risk-adjusted /100</small><br><small class="muted">Base '+Number(t.opportunity_score??0).toFixed(1)+' · −'+Number(t.risk_adjustment_points??0).toFixed(1)+' pts</small><div class="audit">'+(t.risk_adjustment_reasons||[]).map(escapeHtml).join("<br>")+'</div></td><td>'+price(t.price_usd)+'</td><td>'+money(t.liquidity_usd)+'</td><td>'+money(t.volume_24h_usd)+'</td><td class="'+cls+'">'+changeText+'</td><td>'+fmt(t.buys_24h)+' / '+fmt(t.sells_24h)+'</td><td><button class="smallbtn" onclick="auditToken(\''+mint+'\',this)">Check security</button> <button class="smallbtn" onclick="holderToken(\''+mint+'\',this)">Holder analysis</button><div class="flag">'+(t.screening_flags||[]).map(escapeHtml).join("<br>")+(t.screening_flags&&t.screening_flags.length?"":"No market-data caution flags")+'</div><div class="audit" id="audit-'+mint+'">Not checked yet</div></td></tr>';
     }).join(""):'<tr><td colspan="7" class="muted">No matching tokens returned. Try lowering the liquidity filter or refresh later.</td></tr>';
     status.textContent="Showing public Solana pairs. "+(data.cached?"Cached response.":"Fresh provider response.")+" Flags are cautions, not scam verdicts.";
     await loadPaper();
