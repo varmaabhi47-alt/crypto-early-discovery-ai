@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#10151f">
+  <title>Crypto Early Discovery AI</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1018;--panel:#121b28;--line:#263447;--muted:#9aabc0;--text:#edf4ff;--green:#50d6a0;--red:#ff7b86;--blue:#80b8ff}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0%,#17263a 0,transparent 35%),var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+    main{max-width:1100px;margin:auto;padding:28px 18px 60px}.top{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+    h1{font-size:clamp(25px,5vw,38px);letter-spacing:-1px;margin:0}.sub{color:var(--muted);margin:6px 0 0}.pill{border:1px solid #315b50;color:var(--green);padding:6px 11px;border-radius:99px;font-size:12px}
+    .notice{margin:22px 0;padding:13px 15px;background:#172334;border:1px solid var(--line);border-radius:12px;color:#c4d2e4;font-size:13px}
+    .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:18px 0}.controls label{color:var(--muted);font-size:13px}
+    input,button{background:#162233;border:1px solid var(--line);border-radius:9px;color:var(--text);padding:10px 12px;font:inherit}
+    input{width:145px}button{cursor:pointer;background:#245b83;border-color:#3679a8;font-weight:650}button:disabled{opacity:.55;cursor:wait}
+    .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0}.stat,.tablewrap{background:var(--panel);border:1px solid var(--line);border-radius:14px}
+    .stat{padding:15px}.stat small{color:var(--muted)}.stat strong{display:block;font-size:24px;margin-top:4px}
+    .tablewrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:760px}th,td{text-align:left;padding:13px 14px;border-bottom:1px solid var(--line);white-space:nowrap}th{color:var(--muted);font-size:12px;font-weight:600;background:#151f2d}
+    tr:last-child td{border:0}.token{display:flex;align-items:center;gap:10px}.token img{width:30px;height:30px;border-radius:50%;object-fit:cover;background:#263447}.token b{display:block}.token small{color:var(--muted)}
+    a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}.positive{color:var(--green)}.negative{color:var(--red)}.muted{color:var(--muted)}
+    #status{color:var(--muted);font-size:13px;margin:12px 2px}.foot{color:var(--muted);font-size:12px;margin-top:18px}
+    @media(max-width:600px){main{padding:22px 12px}.stats{grid-template-columns:1fr}.stat strong{font-size:21px}}
+  </style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <div><h1>Crypto Early Discovery AI</h1><p class="sub">Solana market discovery · read-only intelligence</p></div>
+    <span class="pill">● PAPER / READ-ONLY</span>
+  </header>
+  <div class="notice">Early discovery is not a prediction. This first version displays public market data only. Security checks, holder analysis, whale tracking and paper-trading evaluation are not implemented yet.</div>
+  <section class="controls">
+    <label for="minliq">Minimum liquidity (USD)</label>
+    <input id="minliq" type="number" min="0" step="100" value="0">
+    <button id="refresh">Refresh discovery</button>
+    <span id="updated" class="muted"></span>
+  </section>
+  <section class="stats">
+    <div class="stat"><small>Tokens found</small><strong id="count">—</strong></div>
+    <div class="stat"><small>Combined displayed liquidity</small><strong id="liquidity">—</strong></div>
+    <div class="stat"><small>Data source</small><strong style="font-size:18px">DexScreener</strong></div>
+  </section>
+  <div id="status">Loading public Solana discovery data…</div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Token</th><th>Price (USD)</th><th>Liquidity</th><th>Volume 24h</th><th>24h change</th><th>Buys / sells</th><th>Risk status</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="7" class="muted">Waiting for data…</td></tr></tbody>
+    </table>
+  </div>
+  <p class="foot">Data may be delayed, incomplete or manipulated. Boosts are promotional activity, not evidence of quality. “Not assessed” means no security audit has been performed.</p>
+</main>
+<script>
+const fmt = (n) => {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
+  return new Intl.NumberFormat("en-US",{notation:"compact",maximumFractionDigits:2}).format(v);
+};
+const money = (n) => n == null ? "—" : "$" + fmt(n);
+const price = (n) => {
+  if (n == null) return "—";
+  const v = Number(n);
+  return Number.isFinite(v) ? "$" + (v < 0.01 ? v.toPrecision(4) : v.toLocaleString(undefined,{maximumFractionDigits:6})) : "—";
+};
+async function load(){
+  const button=document.getElementById("refresh");
+  const status=document.getElementById("status");
+  button.disabled=true; status.textContent="Fetching latest public token data…";
+  try{
+    const min=Math.max(0,Number(document.getElementById("minliq").value)||0);
+    const response=await fetch("/api/discover?min_liquidity="+encodeURIComponent(min));
+    const data=await response.json();
+    if(!response.ok) throw new Error(data.detail||"Unable to load discovery data");
+    const tokens=data.tokens||[];
+    document.getElementById("count").textContent=tokens.length;
+    document.getElementById("liquidity").textContent=money(tokens.reduce((s,t)=>s+Number(t.liquidity_usd||0),0));
+    document.getElementById("updated").textContent="Updated "+new Date(data.updated_at).toLocaleTimeString();
+    document.getElementById("rows").innerHTML=tokens.length ? tokens.map(t=>{
+      const change=Number(t.price_change_24h_pct);
+      const changeText=Number.isFinite(change)?change.toFixed(2)+"%":"—";
+      const cls=change>0?"positive":change<0?"negative":"muted";
+      const title=(t.name||"Unknown")+" ("+(t.symbol||"—")+")";
+      const icon=t.image?'<img src="'+t.image+'" alt="" loading="lazy" onerror="this.style.display=\'none\'">':'';
+      const link=t.url?'<a href="'+t.url+'" target="_blank" rel="noopener noreferrer">View pair ↗</a>':'—';
+      return '<tr><td><div class="token">'+icon+'<div><b>'+escapeHtml(title)+'</b><small>'+escapeHtml(t.dex||"Unknown DEX")+' · '+link+'</small></div></div></td><td>'+price(t.price_usd)+'</td><td>'+money(t.liquidity_usd)+'</td><td>'+money(t.volume_24h_usd)+'</td><td class="'+cls+'">'+changeText+'</td><td>'+fmt(t.buys_24h)+' / '+fmt(t.sells_24h)+'</td><td class="muted">Not assessed</td></tr>';
+    }).join(""):'<tr><td colspan="7" class="muted">No matching tokens returned. Try lowering the liquidity filter or refresh later.</td></tr>';
+    status.textContent="Showing public Solana pairs. "+(data.cached?"Cached response.":"Fresh provider response.");
+  }catch(error){
+    status.textContent="Could not load data: "+error.message;
+    document.getElementById("rows").innerHTML='<tr><td colspan="7" class="muted">Provider unavailable. Please try again later.</td></tr>';
+  }finally{button.disabled=false;}
+}
+function escapeHtml(value){return String(value).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+document.getElementById("refresh").addEventListener("click",load);
+load();
+</script>
+</body>
+</html>
