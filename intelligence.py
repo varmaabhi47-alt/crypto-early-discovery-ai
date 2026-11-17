@@ -62,7 +62,7 @@ def aggregate_wallets(creator: str | None, holders: list[dict]) -> list[dict]:
             pass
         row["insider_flagged"] = row["insider_flagged"] or holder.get("insider") is True
     result = list(wallets.values())
-    result.sort(key=lambda row: (row["address"] not in (creator or ""), row["holder_pct"]), reverse=False)
+    result.sort(key=lambda row: (row["address"] != creator, -row["holder_pct"]))
     return result[:6]
 
 
