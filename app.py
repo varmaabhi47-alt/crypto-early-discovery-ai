@@ -188,6 +188,85 @@ async def discover_gecko(client: httpx.AsyncClient):
     return tokens
 
 
+async def discover_jupiter(client: httpx.AsyncClient):
+    """Fallback discovery using Jupiter's public recently-created Solana tokens."""
+    raw = await get_json_with_retry(
+        client,
+        "https://api.jup.ag/tokens/v2/recent",
+        attempts=1,
+    )
+    if not isinstance(raw, list):
+        raise ValueError("Jupiter returned an unexpected response format.")
+
+    tokens = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        mint = item.get("id") or item.get("address")
+        if not mint:
+            continue
+        stats = item.get("stats24h") or item.get("stats") or {}
+        liquidity = item.get("liquidity") or item.get("liquidityUsd") or 0
+        volume = stats.get("volume") or stats.get("volumeUsd") or item.get("volume24h") or 0
+        buys = stats.get("numBuys") or stats.get("buys") or 0
+        sells = stats.get("numSells") or stats.get("sells") or 0
+        change = stats.get("priceChange") or stats.get("priceChangePct") or 0
+        try:
+            liquidity = float(liquidity or 0)
+            volume = float(volume or 0)
+            buys = int(buys or 0)
+            sells = int(sells or 0)
+            change = float(change or 0)
+        except (TypeError, ValueError):
+            continue
+        import math
+        liq_score = min(100.0, max(0.0, (math.log10(max(liquidity, 1) / 100) / 4) * 100))
+        turnover_score = min(100.0, max(0.0, (volume / max(liquidity, 1)) * 50))
+        total = buys + sells
+        flow_score = buys / total * 100 if total else 50.0
+        momentum_score = min(100.0, max(0.0, 50.0 + change * 2.0))
+        organic = item.get("organicScore")
+        try:
+            organic_score = float(organic) if organic is not None else 50.0
+        except (TypeError, ValueError):
+            organic_score = 50.0
+        # Jupiter organic score contributes a modest quality signal, not a safety verdict.
+        score = round(
+            liq_score * .25 + turnover_score * .20 +
+            flow_score * .20 + momentum_score * .15 + organic_score * .20, 1
+        )
+        tokens.append({
+            "name": item.get("name") or "Unknown",
+            "symbol": item.get("symbol") or "—",
+            "address": mint,
+            "pair_address": None,
+            "url": f"https://jup.ag/tokens/{mint}",
+            "dex": "Jupiter recent tokens",
+            "price_usd": item.get("usdPrice") or item.get("price"),
+            "liquidity_usd": liquidity,
+            "volume_24h_usd": volume,
+            "opportunity_score": score,
+            "score_components": {
+                "liquidity": round(liq_score, 1),
+                "turnover": round(turnover_score, 1),
+                "buy_flow": round(flow_score, 1),
+                "momentum": round(momentum_score, 1),
+                "organic": round(organic_score, 1),
+            },
+            "price_change_24h_pct": change,
+            "buys_24h": buys,
+            "sells_24h": sells,
+            "boost_amount": 0,
+            "boost_total": 0,
+            "image": item.get("icon"),
+            "pair_created_at": None,
+            "security_status": "Not assessed",
+            "source": "Jupiter"
+        })
+    tokens.sort(key=lambda item: item["opportunity_score"], reverse=True)
+    return tokens
+
+
 async def discover():
     now = time.time()
     if now - _cache["at"] < CACHE_TTL and _cache["data"]:
@@ -215,25 +294,39 @@ async def discover():
                 _cache["sources"] = {"geckoterminal_new_pools": "available", "dexscreener": "unavailable"}
                 return gecko_tokens, False, _cache["sources"]
             except Exception as gecko_exc:
-                def reason(exc):
-                    if isinstance(exc, httpx.HTTPStatusError):
-                        return f"HTTP {exc.response.status_code}"
-                    if isinstance(exc, httpx.TimeoutException):
-                        return "timeout"
-                    if isinstance(exc, httpx.RequestError):
-                        return "network error"
-                    return type(exc).__name__
-                raise HTTPException(
-                    status_code=502,
-                    detail={
-                        "message": "DexScreener and GeckoTerminal discovery feeds are unavailable.",
-                        "dexscreener": {
-                            "profiles": reason(profile_result),
-                            "boosts": reason(boost_result)
-                        },
-                        "geckoterminal": reason(gecko_exc)
+                try:
+                    jupiter_tokens = await discover_jupiter(client)
+                    if not jupiter_tokens:
+                        raise ValueError("Jupiter returned no usable recent tokens.")
+                    _cache["at"] = now
+                    _cache["data"] = jupiter_tokens
+                    _cache["sources"] = {
+                        "jupiter_recent_tokens": "available",
+                        "dexscreener": "rate limited",
+                        "geckoterminal": "rate limited"
                     }
-                ) from gecko_exc
+                    return jupiter_tokens, False, _cache["sources"]
+                except Exception as jupiter_exc:
+                    def reason(exc):
+                        if isinstance(exc, httpx.HTTPStatusError):
+                            return f"HTTP {exc.response.status_code}"
+                        if isinstance(exc, httpx.TimeoutException):
+                            return "timeout"
+                        if isinstance(exc, httpx.RequestError):
+                            return "network error"
+                        return type(exc).__name__
+                    raise HTTPException(
+                        status_code=502,
+                        detail={
+                            "message": "All configured public discovery feeds are unavailable.",
+                            "dexscreener": {
+                                "profiles": reason(profile_result),
+                                "boosts": reason(boost_result)
+                            },
+                            "geckoterminal": reason(gecko_exc),
+                            "jupiter": reason(jupiter_exc)
+                        }
+                    ) from jupiter_exc
 
         profiles = profile_result if profiles_ok and isinstance(profile_result, list) else []
         boosts = boost_result if boosts_ok and isinstance(boost_result, list) else []
