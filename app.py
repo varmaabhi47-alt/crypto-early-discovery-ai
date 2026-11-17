@@ -186,3 +186,73 @@ async def api_security(mint: str):
     }
     _security_cache[mint] = {"at": now, "data": report}
     return {**report, "cached": False}
+
+
+@app.get("/api/holders/{mint}")
+async def api_holders(mint: str):
+    if not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", mint):
+        raise HTTPException(status_code=400, detail="Invalid Solana mint address format.")
+
+    now = time.time()
+    key = "holders:" + mint
+    cached = _security_cache.get(key)
+    if cached and now - cached["at"] < SECURITY_CACHE_TTL:
+        return {**cached["data"], "cached": True}
+
+    url = f"{RUGCHECK}/v1/tokens/{mint}/report"
+    timeout = httpx.Timeout(18.0, connect=6.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout, headers={"Accept": "application/json"}) as client:
+            response = await client.get(url)
+            if response.status_code == 404:
+                raise HTTPException(status_code=404, detail="No full cached RugCheck report is available for this token.")
+            if response.status_code == 429:
+                raise HTTPException(status_code=429, detail="RugCheck rate limit reached. Please wait before retrying.")
+            response.raise_for_status()
+            raw = response.json()
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="RugCheck full report is unavailable or unreadable.") from exc
+
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=502, detail="Unexpected full report format.")
+
+    holders_raw = raw.get("topHolders")
+    holders = []
+    if isinstance(holders_raw, list):
+        for item in holders_raw:
+            if not isinstance(item, dict):
+                continue
+            pct = item.get("pct")
+            try:
+                pct = float(pct) if pct is not None else None
+            except (TypeError, ValueError):
+                pct = None
+            holders.append({
+                "address": item.get("address"),
+                "owner": item.get("owner"),
+                "pct": pct,
+                "insider": item.get("insider") if isinstance(item.get("insider"), bool) else None
+            })
+    known_pcts = [h["pct"] for h in holders if h["pct"] is not None and h["pct"] >= 0]
+    known_pcts.sort(reverse=True)
+    report = {
+        "mint": mint,
+        "source": "RugCheck full report",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "holder_count_returned": len(holders),
+        "top_1_pct": round(sum(known_pcts[:1]), 2) if known_pcts else None,
+        "top_5_pct": round(sum(known_pcts[:5]), 2) if known_pcts else None,
+        "top_10_pct": round(sum(known_pcts[:10]), 2) if known_pcts else None,
+        "known_insider_pct": round(sum(h["pct"] or 0 for h in holders if h["insider"] is True), 2),
+        "creator": raw.get("creator"),
+        "creator_balance": raw.get("creatorBalance"),
+        "mint_authority": (raw.get("token") or {}).get("mintAuthority") if isinstance(raw.get("token"), dict) else raw.get("mintAuthority"),
+        "freeze_authority": (raw.get("token") or {}).get("freezeAuthority") if isinstance(raw.get("token"), dict) else raw.get("freezeAuthority"),
+        "metadata_mutable": (raw.get("tokenMeta") or {}).get("mutable") if isinstance(raw.get("tokenMeta"), dict) else None,
+        "top_holders": holders[:10],
+        "limitations": "Only the top-holder entries returned by RugCheck are summarized. Percentages may include pool, burn, exchange or program accounts and are not necessarily unique beneficial owners. Missing data is unknown, not zero or safe."
+    }
+    _security_cache[key] = {"at": now, "data": report}
+    return {**report, "cached": False}
