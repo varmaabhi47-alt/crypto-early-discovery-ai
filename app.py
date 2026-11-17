@@ -506,7 +506,22 @@ async def api_security(mint: str):
             }
             for item in risks if isinstance(item, dict)
         ],
-        "note": "A cached third-party heuristic report, not a guarantee of safety. Missing fields mean unknown, not safe."
+        "critical_risk_count": sum(1 for item in risks if isinstance(item, dict) and str(item.get("level", "")).lower() == "danger"),
+        "risk_classification": (
+            "critical_review_required"
+            if any(isinstance(item, dict) and (
+                str(item.get("level", "")).lower() == "danger"
+                or "creator" in str(item.get("name", "")).lower() and "rug" in str(item.get("name", "")).lower()
+                or "single holder" in str(item.get("name", "")).lower()
+            ) for item in risks)
+            else "warnings_present" if risks else "no_reported_risks_not_proof_of_safety"
+        ),
+        "shortlist_action": (
+            "exclude_from_positive_shortlist_pending_manual_review"
+            if any(isinstance(item, dict) and str(item.get("level", "")).lower() == "danger" for item in risks)
+            else "manual_review_required"
+        ),
+        "note": "Third-party heuristic report, not a guarantee of safety or a rug-probability estimate. Danger findings trigger conservative exclusion from the positive shortlist pending review. Missing fields mean unknown, not safe."
     }
     _security_cache[mint] = {"at": now, "data": report}
     return {**report, "cached": False}
@@ -561,22 +576,39 @@ async def api_holders(mint: str):
             })
     known_pcts = [h["pct"] for h in holders if h["pct"] is not None and h["pct"] >= 0]
     known_pcts.sort(reverse=True)
+    returned_entries_pct = round(sum(known_pcts), 2) if known_pcts else None
+    owners = {h["owner"] for h in holders if h.get("owner")}
+    top1 = round(sum(known_pcts[:1]), 2) if len(known_pcts) >= 1 else None
+    top5 = round(sum(known_pcts[:5]), 2) if len(known_pcts) >= 5 else None
+    top10 = round(sum(known_pcts[:10]), 2) if len(known_pcts) >= 10 else None
+    concentration_flags = []
+    if top1 is not None and top1 >= 20:
+        concentration_flags.append("Largest returned holder entry is at least 20%")
+    if len(holders) < 10:
+        concentration_flags.append("Incomplete holder sample: fewer than 10 entries returned")
+    if returned_entries_pct is not None and returned_entries_pct > 100.5:
+        concentration_flags.append("Returned holder percentages exceed 100%; investigate account overlap or source semantics")
     report = {
         "mint": mint,
         "source": "RugCheck full report",
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "holder_count_returned": len(holders),
-        "top_1_pct": round(sum(known_pcts[:1]), 2) if known_pcts else None,
-        "top_5_pct": round(sum(known_pcts[:5]), 2) if known_pcts else None,
-        "top_10_pct": round(sum(known_pcts[:10]), 2) if known_pcts else None,
+        "distinct_owner_addresses_returned": len(owners),
+        "returned_entries_combined_pct": returned_entries_pct,
+        "top_1_pct": top1,
+        "top_5_pct": top5,
+        "top_10_pct": top10,
+        "top_5_status": "measured" if top5 is not None else "unknown_insufficient_entries",
+        "top_10_status": "measured" if top10 is not None else "unknown_insufficient_entries",
         "known_insider_pct": round(sum(h["pct"] or 0 for h in holders if h["insider"] is True), 2),
+        "concentration_flags": concentration_flags,
         "creator": raw.get("creator"),
         "creator_balance": raw.get("creatorBalance"),
         "mint_authority": (raw.get("token") or {}).get("mintAuthority") if isinstance(raw.get("token"), dict) else raw.get("mintAuthority"),
         "freeze_authority": (raw.get("token") or {}).get("freezeAuthority") if isinstance(raw.get("token"), dict) else raw.get("freezeAuthority"),
         "metadata_mutable": (raw.get("tokenMeta") or {}).get("mutable") if isinstance(raw.get("tokenMeta"), dict) else None,
         "top_holders": holders[:10],
-        "limitations": "Only the top-holder entries returned by RugCheck are summarized. Percentages may include pool, burn, exchange or program accounts and are not necessarily unique beneficial owners. Missing data is unknown, not zero or safe."
+        "limitations": "Top-1/top-5/top-10 are reported only when at least that many valid entries are returned. Combined percentage covers returned entries only. Entries may be token accounts, pools, burn, exchange or program accounts and are not necessarily unique beneficial owners. Missing data is unknown, not zero or safe."
     }
     _security_cache[key] = {"at": now, "data": report}
     return {**report, "cached": False}
