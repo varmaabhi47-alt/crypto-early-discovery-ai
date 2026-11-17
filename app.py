@@ -127,6 +127,8 @@ async def discover():
                 get_json_with_retry(client, f"{DEX}/token-boosts/latest/v1"),
                 return_exceptions=True,
             )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="Unable to contact the public discovery feeds.") from exc
 
         profiles_ok = not isinstance(profile_result, BaseException)
         boosts_ok = not isinstance(boost_result, BaseException)
