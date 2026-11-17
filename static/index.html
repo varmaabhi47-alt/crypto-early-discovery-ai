@@ -31,7 +31,7 @@
     <div><h1>Crypto Early Discovery AI</h1><p class="sub">Solana market discovery · read-only intelligence</p></div>
     <span class="pill">● PAPER / READ-ONLY</span>
   </header>
-  <div class="notice">Early discovery is not a prediction. Security reports are fetched only when you request them and may be cached by the provider. A missing report is unknown, not safe. This is not a buy recommendation.</div>
+  <div class="notice">Experimental rank combines liquidity (30%), volume/liquidity (25%), buy-flow (25%) and 24h momentum (20%). It is an unvalidated screening heuristic, not a probability or buy signal. Early discovery is not a prediction. Security reports are fetched only when you request them and may be cached by the provider. A missing report is unknown, not safe. This is not a buy recommendation.</div>
   <section class="controls">
     <label for="minliq">Minimum liquidity (USD)</label>
     <input id="minliq" type="number" min="0" step="100" value="0">
@@ -46,8 +46,8 @@
   <div id="status">Loading public Solana discovery data…</div>
   <div class="tablewrap">
     <table>
-      <thead><tr><th>Token</th><th>Price (USD)</th><th>Liquidity</th><th>Volume 24h</th><th>24h change</th><th>Buys / sells</th><th>Security report</th></tr></thead>
-      <tbody id="rows"><tr><td colspan="7" class="muted">Waiting for data…</td></tr></tbody>
+      <thead><tr><th>Token</th><th>Rank score</th><th>Price (USD)</th><th>Liquidity</th><th>Volume 24h</th><th>24h change</th><th>Buys / sells</th><th>Security report</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="8" class="muted">Waiting for data…</td></tr></tbody>
     </table>
   </div>
   <p class="foot">Security provider: RugCheck summary endpoint. Free public access and cached-report availability can change. A clean heuristic report cannot rule out insider selling, manipulation or future exploits. Holder and liquidity figures may be incomplete.</p>
@@ -131,7 +131,7 @@ async function holderToken(mint, button){
       const icon=t.image?'<img src="'+escapeHtml(t.image)+'" alt="" loading="lazy" onerror="this.style.display=\'none\'">':'';
       const link=t.url?'<a href="'+escapeHtml(t.url)+'" target="_blank" rel="noopener noreferrer">View pair ↗</a>':'—';
       const mint=escapeHtml(t.address);
-      return '<tr><td><div class="token">'+icon+'<div><b>'+escapeHtml(title)+'</b><small>'+escapeHtml(t.dex||"Unknown DEX")+' · '+link+'</small></div></div></td><td>'+price(t.price_usd)+'</td><td>'+money(t.liquidity_usd)+'</td><td>'+money(t.volume_24h_usd)+'</td><td class="'+cls+'">'+changeText+'</td><td>'+fmt(t.buys_24h)+' / '+fmt(t.sells_24h)+'</td><td><button class="smallbtn" onclick="auditToken(\''+mint+'\',this)">Check security</button> <button class="smallbtn" onclick="holderToken(\''+mint+'\',this)">Holder analysis</button><div class="audit" id="audit-'+mint+'">Not checked yet</div></td></tr>';
+      return '<tr><td><div class="token">'+icon+'<div><b>'+escapeHtml(title)+'</b><small>'+escapeHtml(t.dex||"Unknown DEX")+' · '+link+'</small></div></div></td><td><strong>'+Number(t.opportunity_score??0).toFixed(1)+'</strong><br><small class="muted">/100 · experimental</small></td><td>'+price(t.price_usd)+'</td><td>'+money(t.liquidity_usd)+'</td><td>'+money(t.volume_24h_usd)+'</td><td class="'+cls+'">'+changeText+'</td><td>'+fmt(t.buys_24h)+' / '+fmt(t.sells_24h)+'</td><td><button class="smallbtn" onclick="auditToken(\''+mint+'\',this)">Check security</button> <button class="smallbtn" onclick="holderToken(\''+mint+'\',this)">Holder analysis</button><div class="audit" id="audit-'+mint+'">Not checked yet</div></td></tr>';
     }).join(""):'<tr><td colspan="7" class="muted">No matching tokens returned. Try lowering the liquidity filter or refresh later.</td></tr>';
     status.textContent="Showing public Solana pairs. "+(data.cached?"Cached response.":"Fresh provider response.");
   }catch(error){
