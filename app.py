@@ -342,6 +342,8 @@ async def update_paper_log(tokens: list[dict]):
             "GET", "paper_token_tracking",
             params={"select": "*", "mint": mint_filter}
         )
+        if fetched is None and os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_ROLE_KEY"):
+            return False
         if isinstance(fetched, list):
             existing = {row.get("mint"): row for row in fetched if row.get("mint")}
 
