@@ -2,13 +2,13 @@
 
 A read-only crypto intelligence terminal, starting with Solana.
 
-## Current milestone: Solana discovery MVP
+## Current milestone: discovery + on-demand security summaries
 
-- Fetches the latest public token profiles and boosts from DexScreener.
-- Enriches Solana token addresses with available pair data.
-- Displays price, liquidity, 24-hour volume, price movement, and buy/sell counts.
-- Uses a short in-memory cache to reduce repeated public API requests.
-- Clearly labels security status as **Not assessed**.
+- Fetches latest public Solana token profiles and boosts from DexScreener.
+- Enriches token addresses with pair price, liquidity, 24-hour volume, price movement, and buy/sell counts.
+- Adds an on-demand RugCheck summary lookup for an individual token mint.
+- Displays available normalized score, LP locked percentage, and reported risk items.
+- Caches market discovery briefly and security summaries locally for one hour to reduce repeated calls.
 
 ## Run locally
 
@@ -29,13 +29,17 @@ On Windows, activate the environment with `.venv\\Scripts\\activate`.
 
 - `GET /api/health`
 - `GET /api/discover?min_liquidity=0&limit=30`
+- `GET /api/security/{solana_mint_address}`
 
 ## Data and cost
 
-- Uses public DexScreener API endpoints; provider limits and availability can change.
-- No paid API, hosting, subscription, or database is required for this local prototype.
+- Market discovery uses public DexScreener API endpoints.
+- Security summaries use RugCheck's public cached summary endpoint. Free access, caching behavior, rate limits, and provider availability can change. The application only requests a report when the user presses **Check security**.
+- No paid API, hosting, subscription, or database is required by this local prototype.
 - No private wallet keys, wallet connection, or real-money execution.
 
 ## Important limitations
 
-This is an early discovery dashboard, not a trading signal or investment recommendation. Token promotions can be misleading. Security checks, holder concentration, whale-wallet intelligence, social intelligence, explainable scoring, persistent storage, and paper-trading evaluation are not implemented yet. Do not interpret missing security data as a safe token.
+This is an early discovery and risk-screening tool, not a trading signal or investment recommendation. RugCheck data is a third-party heuristic summary, may be cached or incomplete, and cannot guarantee safety. A missing report or missing field means unknown, not safe.
+
+The app does not yet independently verify holder concentration, whale-wallet activity, token creator history, social momentum, or liquidity-lock claims. These need separate evidence and validation. Paper-trading evaluation and persistent storage are not implemented yet.
