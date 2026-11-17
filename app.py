@@ -18,6 +18,8 @@ CACHE_TTL = 60
 SECURITY_CACHE_TTL = 3600
 _cache: dict[str, Any] = {"at": 0.0, "data": []}
 _security_cache: dict[str, Any] = {}
+_paper_log: dict[str, Any] = {}
+PAPER_HORIZONS = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
 _semaphore = asyncio.Semaphore(5)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -267,6 +269,60 @@ async def discover_jupiter(client: httpx.AsyncClient):
     return tokens
 
 
+
+def screening_flags(token: dict) -> list[str]:
+    """Market-data cautions only; never a scam classification."""
+    flags = []
+    liquidity = float(token.get("liquidity_usd") or 0)
+    volume = float(token.get("volume_24h_usd") or 0)
+    buys, sells = int(token.get("buys_24h") or 0), int(token.get("sells_24h") or 0)
+    if liquidity < 5000:
+        flags.append("Low reported liquidity (<$5k)")
+    if liquidity > 0 and volume / liquidity > 20:
+        flags.append("Unusually high volume/liquidity (>20x)")
+    if buys + sells >= 20 and (buys == 0 or sells == 0 or max(buys, sells) / max(1, min(buys, sells)) > 10):
+        flags.append("Strong buy/sell imbalance")
+    try:
+        if token.get("price_change_24h_pct") is not None and float(token["price_change_24h_pct"]) <= -30:
+            flags.append("Sharp 24h price decline (≤-30%)")
+    except (TypeError, ValueError):
+        pass
+    organic = (token.get("score_components") or {}).get("organic")
+    if organic is not None and float(organic) < 30:
+        flags.append("Low Jupiter organic score (<30)")
+    return flags
+
+
+def update_paper_log(tokens: list[dict]):
+    """Observe first-seen prices and horizon outcomes while this process stays alive."""
+    now = time.time()
+    for token in tokens:
+        mint = token.get("address")
+        try:
+            price = float(token.get("price_usd"))
+        except (TypeError, ValueError):
+            continue
+        if not mint or price <= 0:
+            continue
+        record = _paper_log.get(mint)
+        if record is None:
+            record = {"mint": mint, "name": token.get("name"), "symbol": token.get("symbol"),
+                      "source": token.get("source"), "entry_price_usd": price,
+                      "first_seen_at": datetime.now(timezone.utc).isoformat(),
+                      "first_seen_ts": now, "latest_price_usd": price,
+                      "latest_return_pct": 0.0, "horizons": {}}
+            _paper_log[mint] = record
+        record["latest_price_usd"] = price
+        record["latest_return_pct"] = round((price / record["entry_price_usd"] - 1) * 100, 3)
+        for label, seconds in PAPER_HORIZONS.items():
+            if label not in record["horizons"] and now - record["first_seen_ts"] >= seconds:
+                record["horizons"][label] = {
+                    "return_pct": record["latest_return_pct"],
+                    "observed_after_hours": round((now - record["first_seen_ts"]) / 3600, 2),
+                    "observed_at": datetime.now(timezone.utc).isoformat()
+                }
+
+
 async def discover():
     now = time.time()
     if now - _cache["at"] < CACHE_TTL and _cache["data"]:
@@ -367,6 +423,9 @@ async def api_discover(
     limit: int = Query(30, ge=1, le=35)
 ):
     tokens, cached, data_sources = await discover()
+    for token in tokens:
+        token["screening_flags"] = screening_flags(token)
+    update_paper_log(tokens)
     filtered = [t for t in tokens if t["liquidity_usd"] >= min_liquidity]
     return {
         "chain": "Solana",
@@ -375,7 +434,28 @@ async def api_discover(
         "data_sources": data_sources,
         "count": len(filtered[:limit]),
         "tokens": filtered[:limit],
-        "disclaimer": "Discovery data is informational, can be delayed or incomplete, and is not a buy recommendation."
+        "disclaimer": "Discovery data is informational, can be delayed or incomplete, and is not a buy recommendation.",
+        "screening_note": "Flags are market-data cautions only, not scam findings or proof of safety."
+    }
+
+
+
+@app.get("/api/paper/performance")
+async def api_paper_performance():
+    rows = []
+    for record in _paper_log.values():
+        rows.append({
+            "mint": record["mint"], "name": record.get("name"), "symbol": record.get("symbol"),
+            "source": record.get("source"), "entry_price_usd": record["entry_price_usd"],
+            "latest_price_usd": record["latest_price_usd"],
+            "latest_return_pct": record["latest_return_pct"],
+            "first_seen_at": record["first_seen_at"], "horizons": record["horizons"]
+        })
+    rows.sort(key=lambda item: item["latest_return_pct"], reverse=True)
+    return {
+        "count": len(rows), "tracked": rows, "horizons": list(PAPER_HORIZONS.keys()),
+        "storage": "In-memory only: records reset when the free Render service sleeps, restarts, or deploys.",
+        "method": "Returns compare first-seen displayed price with the latest price observed on a dashboard refresh after each horizon. They are not executable fills and exclude fees, slippage, failed swaps and unavailable prices."
     }
 
 
