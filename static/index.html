@@ -20,7 +20,7 @@
     .tablewrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:850px}th,td{text-align:left;padding:13px 14px;border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:top}th{color:var(--muted);font-size:12px;font-weight:600;background:#151f2d}
     tr:last-child td{border:0}.token{display:flex;align-items:center;gap:10px}.token img{width:30px;height:30px;border-radius:50%;object-fit:cover;background:#263447}.token b{display:block}.token small{color:var(--muted)}
     a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}.positive{color:var(--green)}.negative{color:var(--red)}.muted{color:var(--muted)}
-    #status{color:var(--muted);font-size:13px;margin:12px 2px}.foot{color:var(--muted);font-size:12px;margin-top:18px}
+    #status{color:var(--muted);font-size:13px;margin:12px 2px}.foot{color:var(--muted);font-size:12px;margin-top:18px}.paper{margin:22px 0;padding:16px;background:var(--panel);border:1px solid var(--line);border-radius:14px}.paper h2{font-size:18px;margin:0 0 8px}.paper p{font-size:12px;color:var(--muted)}.flag{display:block;color:var(--amber);white-space:normal;font-size:11px;margin-top:5px}
     .audit{white-space:normal;min-width:170px;max-width:280px;font-size:12px;color:var(--muted);margin-top:7px}.audit strong{color:var(--text)}.risk{padding:5px 0;border-top:1px solid var(--line);white-space:normal}.warn{color:var(--amber)}.danger{color:var(--red)}.good{color:var(--green)}
     @media(max-width:600px){main{padding:22px 12px}.stats{grid-template-columns:1fr}.stat strong{font-size:21px}}
   </style>
@@ -44,9 +44,14 @@
     <div class="stat"><small>Market data</small><strong style="font-size:18px">DexScreener</strong></div>
   </section>
   <div id="status">Loading public Solana discovery data…</div>
+  <section class="paper"><h2>Paper performance audit</h2>
+    <p id="paper-note">Tracking begins when tokens are first seen. Refresh over time to observe 1h, 6h, 24h and 7d outcomes.</p>
+    <div id="paper-status" class="muted">No paper observations yet.</div>
+    <div class="tablewrap"><table style="min-width:650px"><thead><tr><th>Token</th><th>Latest return</th><th>1h</th><th>6h</th><th>24h</th><th>7d</th></tr></thead><tbody id="paper-rows"><tr><td colspan="6" class="muted">Waiting for observations…</td></tr></tbody></table></div>
+  </section>
   <div class="tablewrap">
     <table>
-      <thead><tr><th>Token</th><th>Rank score</th><th>Price (USD)</th><th>Liquidity</th><th>Volume 24h</th><th>24h change</th><th>Buys / sells</th><th>Security report</th></tr></thead>
+      <thead><tr><th>Token</th><th>Rank score</th><th>Price (USD)</th><th>Liquidity</th><th>Volume 24h</th><th>24h change</th><th>Buys / sells</th><th>Screening cautions / security</th></tr></thead>
       <tbody id="rows"><tr><td colspan="8" class="muted">Waiting for data…</td></tr></tbody>
     </table>
   </div>
@@ -111,6 +116,21 @@ async function holderToken(mint, button){
   finally{button.disabled=false;}
 }
 
+
+async function loadPaper(){
+  try{
+    const response=await fetch("/api/paper/performance");
+    const data=await response.json();
+    document.getElementById("paper-note").textContent=data.storage+" "+data.method;
+    document.getElementById("paper-status").textContent=data.count+" tokens tracked in this running process.";
+    const labels=["1h","6h","24h","7d"];
+    document.getElementById("paper-rows").innerHTML=(data.tracked||[]).length?data.tracked.slice(0,20).map(t=>{
+      const cell=k=>t.horizons[k]?Number(t.horizons[k].return_pct).toFixed(2)+"% (at "+t.horizons[k].observed_after_hours+"h)":"Pending";
+      const ret=Number(t.latest_return_pct);
+      return "<tr><td>"+escapeHtml(t.name||t.symbol||t.mint)+"</td><td class='"+(ret>0?"positive":ret<0?"negative":"muted")+"'>"+ret.toFixed(2)+"%</td>"+labels.map(k=>"<td>"+cell(k)+"</td>").join("")+"</tr>";
+    }).join(""):'<tr><td colspan="6" class="muted">No valid token prices to track yet.</td></tr>';
+  }catch(e){document.getElementById("paper-status").textContent="Paper audit unavailable: "+e.message;}
+}
 async function load(){
   const button=document.getElementById("refresh");
   const status=document.getElementById("status");
@@ -136,9 +156,9 @@ async function load(){
       const icon=t.image?'<img src="'+escapeHtml(t.image)+'" alt="" loading="lazy" onerror="this.style.display=\'none\'">':'';
       const link=t.url?'<a href="'+escapeHtml(t.url)+'" target="_blank" rel="noopener noreferrer">View pair ↗</a>':'—';
       const mint=escapeHtml(t.address);
-      return '<tr><td><div class="token">'+icon+'<div><b>'+escapeHtml(title)+'</b><small>'+escapeHtml(t.dex||"Unknown DEX")+' · '+link+'</small></div></div></td><td><strong>'+Number(t.opportunity_score??0).toFixed(1)+'</strong><br><small class="muted">/100 · experimental</small></td><td>'+price(t.price_usd)+'</td><td>'+money(t.liquidity_usd)+'</td><td>'+money(t.volume_24h_usd)+'</td><td class="'+cls+'">'+changeText+'</td><td>'+fmt(t.buys_24h)+' / '+fmt(t.sells_24h)+'</td><td><button class="smallbtn" onclick="auditToken(\''+mint+'\',this)">Check security</button> <button class="smallbtn" onclick="holderToken(\''+mint+'\',this)">Holder analysis</button><div class="audit" id="audit-'+mint+'">Not checked yet</div></td></tr>';
+      return '<tr><td><div class="token">'+icon+'<div><b>'+escapeHtml(title)+'</b><small>'+escapeHtml(t.dex||"Unknown DEX")+' · '+link+'</small></div></div></td><td><strong>'+Number(t.opportunity_score??0).toFixed(1)+'</strong><br><small class="muted">/100 · experimental</small></td><td>'+price(t.price_usd)+'</td><td>'+money(t.liquidity_usd)+'</td><td>'+money(t.volume_24h_usd)+'</td><td class="'+cls+'">'+changeText+'</td><td>'+fmt(t.buys_24h)+' / '+fmt(t.sells_24h)+'</td><td><button class="smallbtn" onclick="auditToken(\''+mint+'\',this)">Check security</button> <button class="smallbtn" onclick="holderToken(\''+mint+'\',this)">Holder analysis</button><div class="flag">'+(t.screening_flags||[]).map(escapeHtml).join("<br>")+(t.screening_flags&&t.screening_flags.length?"":"No market-data caution flags")+'</div><div class="audit" id="audit-'+mint+'">Not checked yet</div></td></tr>';
     }).join(""):'<tr><td colspan="7" class="muted">No matching tokens returned. Try lowering the liquidity filter or refresh later.</td></tr>';
-    status.textContent="Showing public Solana pairs. "+(data.cached?"Cached response.":"Fresh provider response.");
+    status.textContent="Showing public Solana pairs. "+(data.cached?"Cached response.":"Fresh provider response.")+" Flags are cautions, not scam verdicts.";\n    await loadPaper();
   }catch(error){
     status.textContent="Could not load data: "+error.message;
     document.getElementById("rows").innerHTML='<tr><td colspan="8" class="muted">Live data could not be loaded: '+escapeHtml(error.message)+'. Tap Refresh discovery to retry.</td></tr>';
