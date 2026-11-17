@@ -43,6 +43,12 @@
     <div class="stat"><small>Combined displayed liquidity</small><strong id="liquidity">—</strong></div>
     <div class="stat"><small>Market data</small><strong style="font-size:18px">DexScreener</strong></div>
   </section>
+  <section class="paper">
+    <h2>Fresh Solana launches</h2>
+    <p>Newest pools visible in GeckoTerminal's current feed, ordered by pool creation time. Pool age is not token mint age, and newness is not a safety or buy signal.</p>
+    <div id="launch-status" class="muted">Loading newest pools…</div>
+    <div class="tablewrap"><table style="min-width:650px"><thead><tr><th>Token / pair</th><th>Pool age</th><th>Stage</th><th>Liquidity</th><th>Volume 24h</th></tr></thead><tbody id="launch-rows"><tr><td colspan="5" class="muted">Waiting for launch feed…</td></tr></tbody></table></div>
+  </section>
   <div id="status">Loading public Solana discovery data…</div>
   <section class="paper"><h2>Paper performance audit</h2>
     <p id="paper-note">Tracking begins when tokens are first seen. Refresh over time to observe 1h, 6h, 24h and 7d outcomes.</p>
@@ -117,6 +123,35 @@ async function holderToken(mint, button){
 }
 
 
+
+function ageLabel(hours){
+  if(hours==null || !Number.isFinite(Number(hours))) return "Unknown";
+  const h=Number(hours);
+  if(h<1) return Math.max(1,Math.round(h*60))+" min";
+  if(h<48) return h.toFixed(1)+" h";
+  return (h/24).toFixed(1)+" d";
+}
+async function loadLaunches(){
+  const status=document.getElementById("launch-status");
+  try{
+    const response=await fetch("/api/launches?window_hours=24&limit=30");
+    const data=await response.json();
+    if(!response.ok) throw new Error(data.detail||"Launch feed unavailable");
+    const launches=data.launches||[];
+    status.textContent=launches.length
+      ? launches.length+" pools within 24h in the provider's current feed · "+new Date(data.updated_at).toLocaleTimeString()
+      : "No pools with usable creation timestamps in this feed right now.";
+    document.getElementById("launch-rows").innerHTML=launches.length?launches.map(t=>{
+      const name=escapeHtml((t.name||"Unknown")+" ("+(t.symbol||"—")+")");
+      const link=t.url?'<a href="'+escapeHtml(t.url)+'" target="_blank" rel="noopener noreferrer">View pair ↗</a>':"—";
+      return '<tr><td><strong>'+name+'</strong><br><small class="muted">'+link+'</small></td><td>'+ageLabel(t.pool_age_hours)+'</td><td>'+escapeHtml(t.launch_stage||"Unknown")+'</td><td>'+money(t.liquidity_usd)+'</td><td>'+money(t.volume_24h_usd)+'</td></tr>';
+    }).join(""):'<tr><td colspan="5" class="muted">No recent pools returned.</td></tr>';
+  }catch(error){
+    status.textContent="Fresh-launch feed unavailable: "+error.message;
+    document.getElementById("launch-rows").innerHTML='<tr><td colspan="5" class="muted">Try Refresh discovery again later.</td></tr>';
+  }
+}
+
 async function loadPaper(){
   try{
     const response=await fetch("/api/paper/performance");
@@ -159,7 +194,7 @@ async function load(){
       return '<tr><td><div class="token">'+icon+'<div><b>'+escapeHtml(title)+'</b><small>'+escapeHtml(t.dex||"Unknown DEX")+' · '+link+'</small></div></div></td><td><strong>'+Number(t.risk_adjusted_score??t.opportunity_score??0).toFixed(1)+'</strong><br><small class="muted">risk-adjusted /100</small><br><small class="muted">Base '+Number(t.opportunity_score??0).toFixed(1)+' · −'+Number(t.risk_adjustment_points??0).toFixed(1)+' pts</small><div class="audit">'+(t.risk_adjustment_reasons||[]).map(escapeHtml).join("<br>")+'</div></td><td>'+price(t.price_usd)+'</td><td>'+money(t.liquidity_usd)+'</td><td>'+money(t.volume_24h_usd)+'</td><td class="'+cls+'">'+changeText+'</td><td>'+fmt(t.buys_24h)+' / '+fmt(t.sells_24h)+'</td><td><button class="smallbtn" onclick="auditToken(\''+mint+'\',this)">Check security</button> <button class="smallbtn" onclick="holderToken(\''+mint+'\',this)">Holder analysis</button><div class="flag">'+(t.screening_flags||[]).map(escapeHtml).join("<br>")+(t.screening_flags&&t.screening_flags.length?"":"No market-data caution flags")+'</div><div class="audit" id="audit-'+mint+'">Not checked yet</div></td></tr>';
     }).join(""):'<tr><td colspan="7" class="muted">No matching tokens returned. Try lowering the liquidity filter or refresh later.</td></tr>';
     status.textContent="Showing public Solana pairs. "+(data.cached?"Cached response.":"Fresh provider response.")+" Flags are cautions, not scam verdicts.";
-    await loadPaper();
+    await Promise.all([loadPaper(),loadLaunches()]);
   }catch(error){
     status.textContent="Could not load data: "+error.message;
     document.getElementById("rows").innerHTML='<tr><td colspan="8" class="muted">Live data could not be loaded: '+escapeHtml(error.message)+'. Tap Refresh discovery to retry.</td></tr>';
