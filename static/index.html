@@ -44,8 +44,12 @@
     <div class="stat"><small>Market data</small><strong style="font-size:18px">DexScreener</strong></div>
   </section>
   <section class="paper">
-    <h2>Fresh Solana launches</h2>
-    <p>Newest pools visible in GeckoTerminal's current feed, ordered by pool creation time. Pool age is not token mint age, and newness is not a safety or buy signal.</p>
+    <h2>Fresh multi-chain launches</h2>
+    <p>Newest pools visible in GeckoTerminal's current feed. Pool age is not token mint age, and newness is not a safety or buy signal.</p>
+    <label for="launch-chain" class="muted">Network</label>
+    <select id="launch-chain" style="background:#162233;border:1px solid #263447;border-radius:9px;color:#edf4ff;padding:10px 12px;margin:8px 0">
+      <option value="solana">Solana</option><option value="base">Base</option><option value="eth">Ethereum</option><option value="bsc">BNB Chain</option>
+    </select>
     <div id="launch-status" class="muted">Loading newest pools…</div>
     <div class="tablewrap"><table style="min-width:650px"><thead><tr><th>Token / pair</th><th>Pool age</th><th>Stage</th><th>Liquidity</th><th>Volume 24h</th></tr></thead><tbody id="launch-rows"><tr><td colspan="5" class="muted">Waiting for launch feed…</td></tr></tbody></table></div>
   </section>
@@ -134,12 +138,12 @@ function ageLabel(hours){
 async function loadLaunches(){
   const status=document.getElementById("launch-status");
   try{
-    const response=await fetch("/api/launches?window_hours=24&limit=30");
+    const response=await fetch("/api/launches?chain="+encodeURIComponent(document.getElementById("launch-chain").value)+"&window_hours=24&limit=30");
     const data=await response.json();
     if(!response.ok) throw new Error(data.detail||"Launch feed unavailable");
     const launches=data.launches||[];
     status.textContent=launches.length
-      ? launches.length+" pools within 24h in the provider's current feed · "+new Date(data.updated_at).toLocaleTimeString()
+      ? launches.length+" "+data.chain_name+" pools within 24h · "+new Date(data.updated_at).toLocaleTimeString()
       : "No pools with usable creation timestamps in this feed right now.";
     document.getElementById("launch-rows").innerHTML=launches.length?launches.map(t=>{
       const name=escapeHtml((t.name||"Unknown")+" ("+(t.symbol||"—")+")");
@@ -201,6 +205,7 @@ async function load(){
   }finally{button.disabled=false;}
 }
 document.getElementById("refresh").addEventListener("click",load);
+document.getElementById("launch-chain").addEventListener("change",loadLaunches);
 load();
 </script>
 </body>

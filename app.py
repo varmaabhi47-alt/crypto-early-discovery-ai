@@ -18,7 +18,7 @@ GECKO = "https://api.geckoterminal.com/api/v2"
 CACHE_TTL = 60
 SECURITY_CACHE_TTL = 3600
 _cache: dict[str, Any] = {"at": 0.0, "data": []}
-_launch_cache: dict[str, Any] = {"at": 0.0, "data": []}
+_launch_cache: dict[str, dict[str, Any]] = {}
 _security_cache: dict[str, Any] = {}
 _paper_log: dict[str, Any] = {}
 PAPER_HORIZONS = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
@@ -118,11 +118,11 @@ async def enrich_token(client: httpx.AsyncClient, token: dict):
     }
 
 
-async def discover_gecko(client: httpx.AsyncClient):
-    """Fallback discovery from GeckoTerminal's public Solana new-pools feed."""
+async def discover_gecko(client: httpx.AsyncClient, network: str = "solana"):
+    """Discover new pools on a GeckoTerminal-supported network."""
     raw = await get_json_with_retry(
         client,
-        f"{GECKO}/networks/solana/new_pools?include=base_token,dex",
+        f"{GECKO}/networks/{network}/new_pools?include=base_token,dex",
         attempts=2,
     )
     if not isinstance(raw, dict) or not isinstance(raw.get("data"), list):
@@ -141,8 +141,9 @@ async def discover_gecko(client: httpx.AsyncClient):
         rel = pool.get("relationships") or {}
         base_rel = (rel.get("base_token") or {}).get("data") or {}
         mint = str(base_rel.get("id") or "")
-        if mint.startswith("solana_"):
-            mint = mint[len("solana_"):]
+        prefix = network + "_"
+        if mint.startswith(prefix):
+            mint = mint[len(prefix):]
         if not mint:
             continue
         base = included.get(base_rel.get("id"), {})
@@ -170,8 +171,9 @@ async def discover_gecko(client: httpx.AsyncClient):
             "name": base.get("name") or attrs.get("name") or "Unknown",
             "symbol": base.get("symbol") or "—",
             "address": mint,
+            "chain": network,
             "pair_address": pool_address,
-            "url": f"https://www.geckoterminal.com/solana/pools/{pool_address}" if pool_address else None,
+            "url": f"https://www.geckoterminal.com/{network}/pools/{pool_address}" if pool_address else None,
             "dex": "GeckoTerminal",
             "price_usd": attrs.get("base_token_price_usd"),
             "liquidity_usd": liquidity,
@@ -733,24 +735,33 @@ async def api_discover(
 
 
 
+SUPPORTED_LAUNCH_CHAINS = {
+    "solana": "Solana",
+    "base": "Base",
+    "eth": "Ethereum",
+    "bsc": "BNB Chain",
+}
+
+
 @app.get("/api/launches")
 async def api_launches(
+    chain: str = Query("solana"),
     window_hours: float = Query(24, gt=0, le=24),
     limit: int = Query(30, ge=1, le=30)
 ):
-    """Return the newest pools visible in GeckoTerminal's current feed."""
+    """Return recent pools from GeckoTerminal's current feed for one supported chain."""
+    if chain not in SUPPORTED_LAUNCH_CHAINS:
+        raise HTTPException(status_code=400, detail={"message": "Unsupported chain.", "supported_chains": list(SUPPORTED_LAUNCH_CHAINS)})
     now = time.time()
-    if now - _launch_cache["at"] >= CACHE_TTL or not _launch_cache["data"]:
+    cached = _launch_cache.get(chain, {"at": 0.0, "data": []})
+    if now - cached["at"] >= CACHE_TTL or not cached["data"]:
         timeout = httpx.Timeout(12.0, connect=6.0)
-        headers = {"User-Agent": "CryptoEarlyDiscoveryAI/0.3"}
+        headers = {"User-Agent": "CryptoEarlyDiscoveryAI/0.4"}
         try:
             async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
-                launches = await discover_gecko(client)
+                launches = await discover_gecko(client, network=chain)
         except Exception as exc:
-            raise HTTPException(
-                status_code=502,
-                detail="The GeckoTerminal new-pools feed is temporarily unavailable."
-            ) from exc
+            raise HTTPException(status_code=502, detail=f"The {SUPPORTED_LAUNCH_CHAINS[chain]} new-pools feed is temporarily unavailable.") from exc
         for token in launches:
             age = pool_age_hours(token.get("pair_created_at"), now)
             token["pool_age_hours"] = age
@@ -758,26 +769,21 @@ async def api_launches(
             token["age_basis"] = "pool creation time"
         launches = [t for t in launches if t.get("pool_age_hours") is not None]
         launches.sort(key=lambda t: t["pool_age_hours"])
-        _launch_cache["at"] = now
-        _launch_cache["data"] = launches
-
-    selected = [
-        token for token in _launch_cache["data"]
-        if token["pool_age_hours"] <= window_hours
-    ][:limit]
+        cached = {"at": now, "data": launches}
+        _launch_cache[chain] = cached
+    selected = [token for token in cached["data"] if token["pool_age_hours"] <= window_hours][:limit]
     return {
-        "chain": "Solana",
+        "chain": chain,
+        "chain_name": SUPPORTED_LAUNCH_CHAINS[chain],
         "source": "GeckoTerminal new-pools feed",
         "window_hours": window_hours,
         "count": len(selected),
         "launches": selected,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "age_definition": "Age is measured from pool creation, not token mint creation.",
-        "coverage_note": "This is the provider's current new-pools feed, not a complete historical index. Some new pools may be absent, and timestamps/prices can be delayed or unavailable.",
+        "coverage_note": "This is the provider's current new-pools feed, not a complete historical index. Some new pools may be absent, and timestamps/prices may be delayed or unavailable.",
         "disclaimer": "Newness is not a quality or safety signal. Do not treat this list as a buy recommendation."
     }
-
-
 
 
 @app.get("/api/paper/performance")
