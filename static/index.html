@@ -88,7 +88,29 @@ async function auditToken(mint, button){
     button.textContent="Retry report";
   }finally{button.disabled=false;}
 }
-async function load(){
+
+async function holderToken(mint, button){
+  const box=document.getElementById("audit-"+mint);
+  button.disabled=true; button.textContent="Checking…";
+  try{
+    const response=await fetch("/api/holders/"+encodeURIComponent(mint));
+    const data=await response.json();
+    if(!response.ok) throw new Error(data.detail||"Holder report unavailable");
+    const pct=v=>v==null?"Unknown":Number(v).toFixed(2)+"%";
+    const authority=v=>v==null?"Revoked / not reported":escapeHtml(v);
+    const entries=(data.top_holders||[]).map((h,i)=>
+      '<div class="risk">#'+(i+1)+' · '+pct(h.pct)+' · '+(h.insider===true?'<span class="warn">Flagged insider</span>':h.insider===false?'Not flagged':'Insider status unknown')+'<br><small>'+escapeHtml(h.owner||h.address||"Address unavailable")+'</small></div>'
+    ).join("");
+    const detail='<div class="risk"><strong>Holder concentration (returned top accounts)</strong><br>Top 1: '+pct(data.top_1_pct)+' · Top 5: '+pct(data.top_5_pct)+' · Top 10: '+pct(data.top_10_pct)+'<br>Known insider-tagged share: '+pct(data.known_insider_pct)+'</div>'+
+      '<div class="risk">Mint authority: '+authority(data.mint_authority)+'<br>Freeze authority: '+authority(data.freeze_authority)+'<br>Mutable metadata: '+(data.metadata_mutable==null?'Unknown':data.metadata_mutable?'Yes':'No')+'<br>Creator: '+escapeHtml(data.creator||"Unknown")+'</div>'+
+      (entries||'<div class="risk">No top-holder entries returned.</div>')+
+      '<div class="risk">'+escapeHtml(data.limitations)+'</div>';
+    box.innerHTML+=detail;
+    button.textContent="Holder data loaded";
+  }catch(error){box.innerHTML+='<div class="risk">'+escapeHtml(error.message)+'</div>';button.textContent="Retry holder check";}
+  finally{button.disabled=false;}
+}
+\nasync function load(){
   const button=document.getElementById("refresh");
   const status=document.getElementById("status");
   button.disabled=true; status.textContent="Fetching latest public token data…";
@@ -109,7 +131,7 @@ async function load(){
       const icon=t.image?'<img src="'+escapeHtml(t.image)+'" alt="" loading="lazy" onerror="this.style.display=\'none\'">':'';
       const link=t.url?'<a href="'+escapeHtml(t.url)+'" target="_blank" rel="noopener noreferrer">View pair ↗</a>':'—';
       const mint=escapeHtml(t.address);
-      return '<tr><td><div class="token">'+icon+'<div><b>'+escapeHtml(title)+'</b><small>'+escapeHtml(t.dex||"Unknown DEX")+' · '+link+'</small></div></div></td><td>'+price(t.price_usd)+'</td><td>'+money(t.liquidity_usd)+'</td><td>'+money(t.volume_24h_usd)+'</td><td class="'+cls+'">'+changeText+'</td><td>'+fmt(t.buys_24h)+' / '+fmt(t.sells_24h)+'</td><td><button class="smallbtn" onclick="auditToken(\''+mint+'\',this)">Check security</button><div class="audit" id="audit-'+mint+'">Not checked yet</div></td></tr>';
+      return '<tr><td><div class="token">'+icon+'<div><b>'+escapeHtml(title)+'</b><small>'+escapeHtml(t.dex||"Unknown DEX")+' · '+link+'</small></div></div></td><td>'+price(t.price_usd)+'</td><td>'+money(t.liquidity_usd)+'</td><td>'+money(t.volume_24h_usd)+'</td><td class="'+cls+'">'+changeText+'</td><td>'+fmt(t.buys_24h)+' / '+fmt(t.sells_24h)+'</td><td><button class="smallbtn" onclick="auditToken(\''+mint+'\',this)">Check security</button> <button class="smallbtn" onclick="holderToken(\''+mint+'\',this)">Holder analysis</button><div class="audit" id="audit-'+mint+'">Not checked yet</div></td></tr>';
     }).join(""):'<tr><td colspan="7" class="muted">No matching tokens returned. Try lowering the liquidity filter or refresh later.</td></tr>';
     status.textContent="Showing public Solana pairs. "+(data.cached?"Cached response.":"Fresh provider response.");
   }catch(error){
