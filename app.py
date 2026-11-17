@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -293,34 +294,123 @@ def screening_flags(token: dict) -> list[str]:
     return flags
 
 
-def update_paper_log(tokens: list[dict]):
-    """Observe first-seen prices and horizon outcomes while this process stays alive."""
+async def supabase_request(method: str, table: str, *, params=None, payload=None):
+    """Server-side Supabase REST helper. Requires secrets configured on the host."""
+    base_url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    if not base_url or not service_key:
+        return None
+    headers = {
+        "apikey": service_key,
+        "Authorization": f"Bearer {service_key}",
+        "Accept": "application/json",
+    }
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+            response = await client.request(
+                method, f"{base_url}/rest/v1/{table}",
+                params=params, json=payload, headers=headers
+            )
+            response.raise_for_status()
+            if not response.content:
+                return []
+            return response.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
+async def update_paper_log(tokens: list[dict]):
+    """Persist paper entries and append token observations when Supabase is configured."""
     now = time.time()
+    valid = []
     for token in tokens:
         mint = token.get("address")
         try:
             price = float(token.get("price_usd"))
         except (TypeError, ValueError):
             continue
-        if not mint or price <= 0:
-            continue
-        record = _paper_log.get(mint)
-        if record is None:
-            record = {"mint": mint, "name": token.get("name"), "symbol": token.get("symbol"),
-                      "source": token.get("source"), "entry_price_usd": price,
-                      "first_seen_at": datetime.now(timezone.utc).isoformat(),
-                      "first_seen_ts": now, "latest_price_usd": price,
-                      "latest_return_pct": 0.0, "horizons": {}}
-            _paper_log[mint] = record
-        record["latest_price_usd"] = price
-        record["latest_return_pct"] = round((price / record["entry_price_usd"] - 1) * 100, 3)
+        if mint and price > 0:
+            valid.append((token, mint, price))
+
+    existing = {}
+    if valid:
+        mint_filter = "in.(" + ",".join(mint for _, mint, _ in valid) + ")"
+        fetched = await supabase_request(
+            "GET", "paper_token_tracking",
+            params={"select": "*", "mint": mint_filter}
+        )
+        if isinstance(fetched, list):
+            existing = {row.get("mint"): row for row in fetched if row.get("mint")}
+
+    upserts = []
+    observations = []
+    for token, mint, price in valid:
+        prior = existing.get(mint)
+        if prior:
+            first_seen_at = prior.get("first_seen_at")
+            try:
+                first_seen_ts = datetime.fromisoformat(first_seen_at.replace("Z", "+00:00")).timestamp()
+            except (TypeError, ValueError):
+                first_seen_ts = now
+            entry_price = float(prior.get("entry_price_usd") or price)
+            horizons = prior.get("horizons") if isinstance(prior.get("horizons"), dict) else {}
+        else:
+            first_seen_ts = now
+            first_seen_at = datetime.now(timezone.utc).isoformat()
+            entry_price = price
+            horizons = {}
+
+        latest_return = round((price / entry_price - 1) * 100, 3)
         for label, seconds in PAPER_HORIZONS.items():
-            if label not in record["horizons"] and now - record["first_seen_ts"] >= seconds:
-                record["horizons"][label] = {
-                    "return_pct": record["latest_return_pct"],
-                    "observed_after_hours": round((now - record["first_seen_ts"]) / 3600, 2),
+            if label not in horizons and now - first_seen_ts >= seconds:
+                horizons[label] = {
+                    "return_pct": latest_return,
+                    "observed_after_hours": round((now - first_seen_ts) / 3600, 2),
                     "observed_at": datetime.now(timezone.utc).isoformat()
                 }
+
+        upserts.append({
+            "mint": mint,
+            "name": token.get("name"),
+            "symbol": token.get("symbol"),
+            "source": token.get("source"),
+            "entry_price_usd": entry_price,
+            "first_seen_at": first_seen_at,
+            "latest_price_usd": price,
+            "latest_return_pct": latest_return,
+            "horizons": horizons,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        })
+        observations.append({
+            "mint": mint,
+            "name": token.get("name"),
+            "symbol": token.get("symbol"),
+            "source": token.get("source"),
+            "price_usd": price,
+            "liquidity_usd": token.get("liquidity_usd"),
+            "volume_24h_usd": token.get("volume_24h_usd"),
+            "opportunity_score": token.get("opportunity_score"),
+            "token_snapshot": token
+        })
+        _paper_log[mint] = {
+            "mint": mint, "name": token.get("name"), "symbol": token.get("symbol"),
+            "source": token.get("source"), "entry_price_usd": entry_price,
+            "first_seen_at": first_seen_at, "first_seen_ts": first_seen_ts,
+            "latest_price_usd": price, "latest_return_pct": latest_return,
+            "horizons": horizons
+        }
+
+    if not upserts:
+        return False
+    saved = await supabase_request(
+        "POST", "paper_token_tracking",
+        params={"on_conflict": "mint"}, payload=upserts
+    )
+    observed = await supabase_request("POST", "token_observations", payload=observations)
+    return saved is not None and observed is not None
 
 
 _discovery_security_cache: dict[str, Any] = {}
@@ -510,7 +600,7 @@ async def api_discover(
     tokens, cached, data_sources = await discover()
     for token in tokens:
         token["screening_flags"] = screening_flags(token)
-    update_paper_log(tokens)
+    persistent_storage = await update_paper_log(tokens)
     filtered = [t for t in tokens if t["liquidity_usd"] >= min_liquidity]
     return {
         "chain": "Solana",
@@ -518,6 +608,7 @@ async def api_discover(
         "cached": cached,
         "data_sources": data_sources,
         "count": len(filtered[:limit]),
+        "storage": "Supabase persistent storage" if persistent_storage else "In-memory fallback; configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY on Render to persist across restarts.",
         "tokens": filtered[:limit],
         "security_gate": {
             "assessed_candidates": min(10, len(tokens)),
@@ -531,19 +622,33 @@ async def api_discover(
 
 @app.get("/api/paper/performance")
 async def api_paper_performance():
-    rows = []
-    for record in _paper_log.values():
-        rows.append({
+    stored = await supabase_request(
+        "GET", "paper_token_tracking",
+        params={"select": "*", "order": "latest_return_pct.desc"}
+    )
+    if isinstance(stored, list):
+        rows = [{
+            "mint": record["mint"], "name": record.get("name"), "symbol": record.get("symbol"),
+            "source": record.get("source"), "entry_price_usd": record["entry_price_usd"],
+            "latest_price_usd": record["latest_price_usd"],
+            "latest_return_pct": record["latest_return_pct"],
+            "first_seen_at": record["first_seen_at"],
+            "horizons": record.get("horizons") or {}
+        } for record in stored]
+        storage_note = "Supabase persistent storage."
+    else:
+        rows = [{
             "mint": record["mint"], "name": record.get("name"), "symbol": record.get("symbol"),
             "source": record.get("source"), "entry_price_usd": record["entry_price_usd"],
             "latest_price_usd": record["latest_price_usd"],
             "latest_return_pct": record["latest_return_pct"],
             "first_seen_at": record["first_seen_at"], "horizons": record["horizons"]
-        })
-    rows.sort(key=lambda item: item["latest_return_pct"], reverse=True)
+        } for record in _paper_log.values()]
+        rows.sort(key=lambda item: item["latest_return_pct"], reverse=True)
+        storage_note = "In-memory fallback: records reset on Render sleep, restart, or deploy. Configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to enable persistence."
     return {
         "count": len(rows), "tracked": rows, "horizons": list(PAPER_HORIZONS.keys()),
-        "storage": "In-memory only: records reset when the free Render service sleeps, restarts, or deploys.",
+        "storage": storage_note,
         "method": "Returns compare first-seen displayed price with the latest price observed on a dashboard refresh after each horizon. They are not executable fills and exclude fees, slippage, failed swaps and unavailable prices."
     }
 
