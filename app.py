@@ -369,6 +369,41 @@ async def assess_discovery_security(client: httpx.AsyncClient, token: dict):
         return {"status": "unavailable", "classification": "unknown", "shortlist_action": "hold_security_unknown"}
 
 
+async def apply_discovery_security_gate(client: httpx.AsyncClient, tokens: list[dict]):
+    tokens.sort(key=lambda item: item["opportunity_score"], reverse=True)
+    for token in tokens:
+        token.update({
+            "security_status": "not_assessed",
+            "security_risk_classification": "unknown",
+            "critical_risk_count": None,
+            "shortlist_eligible": False,
+            "shortlist_action": "hold_pending_security_check",
+        })
+    top_candidates = tokens[:10]
+    security_results = await asyncio.gather(
+        *(assess_discovery_security(client, token) for token in top_candidates),
+        return_exceptions=True
+    )
+    for token, assessment in zip(top_candidates, security_results):
+        if isinstance(assessment, BaseException):
+            assessment = {"status": "unavailable", "classification": "unknown",
+                          "shortlist_action": "hold_security_unknown"}
+        token["security_status"] = assessment["status"]
+        token["security_risk_classification"] = assessment["classification"]
+        token["critical_risk_count"] = assessment.get("critical_risk_count")
+        token["shortlist_action"] = assessment["shortlist_action"]
+        token["shortlist_eligible"] = (
+            assessment["status"] == "assessed"
+            and assessment.get("critical_risk_count") == 0
+        )
+    tokens.sort(key=lambda item: (
+        0 if item.get("shortlist_eligible") else
+        2 if item.get("security_risk_classification") == "critical_review_required" else 1,
+        -item["opportunity_score"]
+    ))
+    return tokens
+
+
 async def discover():
     now = time.time()
     if now - _cache["at"] < CACHE_TTL and _cache["data"]:
@@ -391,6 +426,7 @@ async def discover():
         if not profiles_ok and not boosts_ok:
             try:
                 gecko_tokens = await discover_gecko(client)
+                await apply_discovery_security_gate(client, gecko_tokens)
                 _cache["at"] = now
                 _cache["data"] = gecko_tokens
                 _cache["sources"] = {"geckoterminal_new_pools": "available", "dexscreener": "unavailable"}
@@ -400,6 +436,7 @@ async def discover():
                     jupiter_tokens = await discover_jupiter(client)
                     if not jupiter_tokens:
                         raise ValueError("Jupiter returned no usable recent tokens.")
+                    await apply_discovery_security_gate(client, jupiter_tokens)
                     _cache["at"] = now
                     _cache["data"] = jupiter_tokens
                     _cache["sources"] = {
@@ -453,39 +490,7 @@ async def discover():
     tokens = [item for item in results if isinstance(item, dict)]
 
     # Security-check only the ten strongest market-data candidates to bound provider calls.
-    # Every other token remains ineligible for positive shortlist status until assessed.
-    tokens.sort(key=lambda item: item["opportunity_score"], reverse=True)
-    for token in tokens:
-        token.update({
-            "security_status": "not_assessed",
-            "security_risk_classification": "unknown",
-            "critical_risk_count": None,
-            "shortlist_eligible": False,
-            "shortlist_action": "hold_pending_security_check",
-        })
-    top_candidates = tokens[:10]
-    security_results = await asyncio.gather(
-        *(assess_discovery_security(client, token) for token in top_candidates),
-        return_exceptions=True
-    )
-    for token, assessment in zip(top_candidates, security_results):
-        if isinstance(assessment, BaseException):
-            assessment = {"status": "unavailable", "classification": "unknown",
-                          "shortlist_action": "hold_security_unknown"}
-        token["security_status"] = assessment["status"]
-        token["security_risk_classification"] = assessment["classification"]
-        token["critical_risk_count"] = assessment.get("critical_risk_count")
-        token["shortlist_action"] = assessment["shortlist_action"]
-        # "Eligible" means eligible for human review, never an automatic buy signal.
-        token["shortlist_eligible"] = (
-            assessment["status"] == "assessed"
-            and assessment["critical_risk_count"] == 0
-        )
-    tokens.sort(key=lambda item: (
-        0 if item.get("shortlist_eligible") else
-        2 if item.get("security_risk_classification") == "critical_review_required" else 1,
-        -item["opportunity_score"]
-    ))
+    await apply_discovery_security_gate(client, tokens)
     _cache["at"] = now
     _cache["data"] = tokens
     _cache["sources"] = sources
