@@ -110,7 +110,8 @@ async function holderToken(mint, button){
   }catch(error){box.innerHTML+='<div class="risk">'+escapeHtml(error.message)+'</div>';button.textContent="Retry holder check";}
   finally{button.disabled=false;}
 }
-\nasync function load(){
+
+async function load(){
   const button=document.getElementById("refresh");
   const status=document.getElementById("status");
   button.disabled=true; status.textContent="Fetching latest public token data…";
