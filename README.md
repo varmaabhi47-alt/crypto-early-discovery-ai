@@ -43,3 +43,12 @@ On Windows, activate the environment with `.venv\\Scripts\\activate`.
 This is an early discovery and risk-screening tool, not a trading signal or investment recommendation. RugCheck data is a third-party heuristic summary, may be cached or incomplete, and cannot guarantee safety. A missing report or missing field means unknown, not safe.
 
 The app does not yet independently verify holder concentration, whale-wallet activity, token creator history, social momentum, or liquidity-lock claims. These need separate evidence and validation. Paper-trading evaluation and persistent storage are not implemented yet.
+
+
+## Holder and authority analysis
+
+The dashboard also provides an on-demand **Holder analysis** action for a discovered Solana mint. It requests RugCheck's full token report and summarizes the returned top-holder entries (top 1/5/10 concentration, insider-tagged percentages), creator information, mint/freeze authority fields, and metadata mutability.
+
+API: `GET /api/holders/{mint}`
+
+The holder figures describe only the top-holder entries returned by the provider. Token accounts are not always unique beneficial owners; pool, burn, exchange, and program accounts can affect concentration. Missing values are unknown, not zero or safe. Reports are cached locally for one hour. No bulk scanning is performed.
