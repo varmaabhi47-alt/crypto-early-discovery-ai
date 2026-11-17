@@ -10,8 +10,9 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from intelligence import router as intelligence_router
 
-app = FastAPI(title="Crypto Early Discovery AI", version="0.2.0")
+app = FastAPI(title="Crypto Early Discovery AI", version="0.5.0")
 DEX = "https://api.dexscreener.com"
 RUGCHECK = "https://api.rugcheck.xyz"
 GECKO = "https://api.geckoterminal.com/api/v2"
@@ -25,6 +26,7 @@ PAPER_HORIZONS = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
 _semaphore = asyncio.Semaphore(5)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
+app.include_router(intelligence_router)
 
 
 @app.get("/", response_class=HTMLResponse)

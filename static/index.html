@@ -28,7 +28,7 @@
 <body>
 <main>
   <header class="top">
-    <div><h1>Crypto Early Discovery AI</h1><p class="sub">Solana market discovery · read-only intelligence</p></div>
+    <div><h1>Crypto Early Discovery AI</h1><p class="sub">Solana discovery · wallet intelligence · social sentiment · read-only</p></div>
     <span class="pill">● PAPER / READ-ONLY</span>
   </header>
   <div class="notice">Base score combines liquidity (30%), volume/liquidity (25%), buy-flow (25%) and 24h momentum (20%). Risk-adjusted score subtracts transparent penalties for thin liquidity, extreme turnover, severe trade imbalance, sharp declines and security uncertainty/warnings. Both are experimental screening heuristics, not probabilities or buy signals. Early discovery is not a prediction. Security reports are fetched only when you request them and may be cached by the provider. A missing report is unknown, not safe. This is not a buy recommendation.</div>
@@ -65,7 +65,7 @@
       <tbody id="rows"><tr><td colspan="8" class="muted">Waiting for data…</td></tr></tbody>
     </table>
   </div>
-  <p class="foot">Security provider: RugCheck summary endpoint. Free public access and cached-report availability can change. A clean heuristic report cannot rule out insider selling, manipulation or future exploits. Holder and liquidity figures may be incomplete.</p>
+  <p class="foot">Wallet intelligence uses RugCheck holder data and sampled Solana RPC transactions. Social sentiment searches Reddit public posts and applies a transparent keyword lexicon. These sources are incomplete and can be rate limited. Security provider: RugCheck summary endpoint. Free public access and cached-report availability can change. A clean heuristic report cannot rule out insider selling, manipulation or future exploits. Holder and liquidity figures may be incomplete.</p>
 </main>
 <script>
 const fmt = (n) => {
@@ -127,6 +127,47 @@ async function holderToken(mint, button){
 }
 
 
+
+
+async function walletToken(mint, button){
+  const box=document.getElementById("intel-"+mint);
+  button.disabled=true; button.textContent="Checking wallets…";
+  box.textContent="Fetching creator/holder wallets and recent public Solana transactions…";
+  try{
+    const response=await fetch("/api/wallets/"+encodeURIComponent(mint));
+    const data=await response.json();
+    if(!response.ok) throw new Error(data.detail||"Wallet intelligence unavailable");
+    const rows=(data.wallets||[]).map(w=>{
+      const events=(w.token_events||[]).map(e=>{
+        const cls=e.direction==="accumulation"?"positive":"negative";
+        const link=e.explorer_url?'<a href="'+escapeHtml(e.explorer_url)+'" target="_blank" rel="noopener noreferrer">transaction ↗</a>':"";
+        return '<div class="risk '+cls+'">'+escapeHtml(e.direction)+' · '+escapeHtml(e.token_amount_change)+' tokens · '+link+'</div>';
+      }).join("");
+      return '<div class="risk"><strong>'+escapeHtml((w.roles||[]).join(" + ")||"Holder")+'</strong> · '+(w.holder_pct?Number(w.holder_pct).toFixed(2)+"% reported share":"share unavailable")+'<br><small>'+escapeHtml(w.address)+'</small><br><span class="muted">RPC: '+escapeHtml(w.activity_status)+' · latest activity '+escapeHtml(w.latest_activity_at||"unknown")+'</span>'+(w.insider_flagged?' · <span class="warn">RugCheck insider flag</span>':'')+(events||'<div class="muted">No matching token balance change found in sampled transactions.</div>')+'</div>';
+    }).join("");
+    box.innerHTML='<strong>Wallet intelligence</strong><br>'+escapeHtml(data.wallet_count)+' wallets inspected · '+escapeHtml(new Date(data.checked_at).toLocaleString())+(rows||'<div class="risk">No owner wallet addresses were returned.</div>')+'<div class="risk">'+escapeHtml(data.coverage)+'</div><div class="risk">'+escapeHtml(data.limitations)+'</div>';
+    button.textContent="Refresh wallet check";
+  }catch(error){box.textContent="Wallet check unavailable: "+error.message;button.textContent="Retry wallet check";}
+  finally{button.disabled=false;}
+}
+async function socialToken(mint, name, symbol, button){
+  const box=document.getElementById("intel-"+mint);
+  button.disabled=true; button.textContent="Scanning Reddit…";
+  box.textContent="Searching public Reddit discussions from the past 7 days…";
+  try{
+    const params=new URLSearchParams({name:name||"",symbol:symbol||""});
+    const response=await fetch("/api/social/"+encodeURIComponent(mint)+"?"+params.toString());
+    const data=await response.json();
+    if(!response.ok) throw new Error(data.detail||"Social sentiment unavailable");
+    const score=data.sentiment_score==null?"Not enough posts":(data.sentiment_score>0?"+":"")+data.sentiment_score+"/100";
+    const posts=(data.posts||[]).slice(0,6).map(p=>
+      '<div class="risk"><strong>'+escapeHtml(p.sentiment.toUpperCase())+'</strong> · r/'+escapeHtml(p.subreddit||"unknown")+' · '+escapeHtml(p.title)+'<br><small>'+escapeHtml(p.score||0)+' votes · '+escapeHtml(p.comments||0)+' comments · </small><a href="'+escapeHtml(p.url)+'" target="_blank" rel="noopener noreferrer">Open post ↗</a></div>'
+    ).join("");
+    box.innerHTML='<strong>Reddit sentiment · 7 days</strong><br>'+escapeHtml(data.mention_count)+' posts · score '+escapeHtml(score)+'<br><span class="positive">Positive '+escapeHtml(data.positive_count)+'</span> · <span class="negative">Negative '+escapeHtml(data.negative_count)+'</span> · Neutral '+escapeHtml(data.neutral_count)+'<br>Engagement: '+escapeHtml(data.engagement.post_score_total)+' votes · '+escapeHtml(data.engagement.comment_total)+' comments'+(posts||'<div class="risk">No matching public posts found.</div>')+'<div class="risk">'+escapeHtml(data.method)+'</div><div class="risk">'+escapeHtml(data.limitations)+'</div>';
+    button.textContent="Refresh social scan";
+  }catch(error){box.textContent="Social scan unavailable: "+error.message;button.textContent="Retry social scan";}
+  finally{button.disabled=false;}
+}
 
 function ageLabel(hours){
   if(hours==null || !Number.isFinite(Number(hours))) return "Unknown";
@@ -195,7 +236,7 @@ async function load(){
       const icon=t.image?'<img src="'+escapeHtml(t.image)+'" alt="" loading="lazy" onerror="this.style.display=\'none\'">':'';
       const link=t.url?'<a href="'+escapeHtml(t.url)+'" target="_blank" rel="noopener noreferrer">View pair ↗</a>':'—';
       const mint=escapeHtml(t.address);
-      return '<tr><td><div class="token">'+icon+'<div><b>'+escapeHtml(title)+'</b><small>'+escapeHtml(t.dex||"Unknown DEX")+' · '+link+'</small></div></div></td><td><strong>'+Number(t.risk_adjusted_score??t.opportunity_score??0).toFixed(1)+'</strong><br><small class="muted">risk-adjusted /100</small><br><small class="muted">Base '+Number(t.opportunity_score??0).toFixed(1)+' · −'+Number(t.risk_adjustment_points??0).toFixed(1)+' pts</small><div class="audit">'+(t.risk_adjustment_reasons||[]).map(escapeHtml).join("<br>")+'</div></td><td>'+price(t.price_usd)+'</td><td>'+money(t.liquidity_usd)+'</td><td>'+money(t.volume_24h_usd)+'</td><td class="'+cls+'">'+changeText+'</td><td>'+fmt(t.buys_24h)+' / '+fmt(t.sells_24h)+'</td><td><button class="smallbtn" onclick="auditToken(\''+mint+'\',this)">Check security</button> <button class="smallbtn" onclick="holderToken(\''+mint+'\',this)">Holder analysis</button><div class="flag">'+(t.screening_flags||[]).map(escapeHtml).join("<br>")+(t.screening_flags&&t.screening_flags.length?"":"No market-data caution flags")+'</div><div class="audit" id="audit-'+mint+'">Not checked yet</div></td></tr>';
+      return '<tr><td><div class="token">'+icon+'<div><b>'+escapeHtml(title)+'</b><small>'+escapeHtml(t.dex||"Unknown DEX")+' · '+link+'</small></div></div></td><td><strong>'+Number(t.risk_adjusted_score??t.opportunity_score??0).toFixed(1)+'</strong><br><small class="muted">risk-adjusted /100</small><br><small class="muted">Base '+Number(t.opportunity_score??0).toFixed(1)+' · −'+Number(t.risk_adjustment_points??0).toFixed(1)+' pts</small><div class="audit">'+(t.risk_adjustment_reasons||[]).map(escapeHtml).join("<br>")+'</div></td><td>'+price(t.price_usd)+'</td><td>'+money(t.liquidity_usd)+'</td><td>'+money(t.volume_24h_usd)+'</td><td class="'+cls+'">'+changeText+'</td><td>'+fmt(t.buys_24h)+' / '+fmt(t.sells_24h)+'</td><td><button class="smallbtn" onclick="auditToken(\''+mint+'\',this)">Check security</button> <button class="smallbtn" onclick="holderToken(\''+mint+'\',this)">Holder analysis</button> <button class="smallbtn" onclick="walletToken(\''+mint+'\',this)">Wallet activity</button> <button class="smallbtn" onclick="socialToken(\''+mint+'\',decodeURIComponent(\''+encodeURIComponent(t.name||"").replace(/'/g,"%27")+'\'),decodeURIComponent(\''+encodeURIComponent(t.symbol||"").replace(/'/g,"%27")+'\'),this)">Social sentiment</button><div class="audit" id="intel-'+mint+'">Wallet and social checks not run</div><div class="flag">'+(t.screening_flags||[]).map(escapeHtml).join("<br>")+(t.screening_flags&&t.screening_flags.length?"":"No market-data caution flags")+'</div><div class="audit" id="audit-'+mint+'">Not checked yet</div></td></tr>';
     }).join(""):'<tr><td colspan="7" class="muted">No matching tokens returned. Try lowering the liquidity filter or refresh later.</td></tr>';
     status.textContent="Showing public Solana pairs. "+(data.cached?"Cached response.":"Fresh provider response.")+" Flags are cautions, not scam verdicts.";
     await Promise.all([loadPaper(),loadLaunches()]);
