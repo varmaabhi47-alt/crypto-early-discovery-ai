@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 app = FastAPI(title="Crypto Early Discovery AI", version="0.2.0")
 DEX = "https://api.dexscreener.com"
 RUGCHECK = "https://api.rugcheck.xyz"
+GECKO = "https://api.geckoterminal.com/api/v2"
 CACHE_TTL = 60
 SECURITY_CACHE_TTL = 3600
 _cache: dict[str, Any] = {"at": 0.0, "data": []}
@@ -113,6 +114,80 @@ async def enrich_token(client: httpx.AsyncClient, token: dict):
     }
 
 
+async def discover_gecko(client: httpx.AsyncClient):
+    """Fallback discovery from GeckoTerminal's public Solana new-pools feed."""
+    raw = await get_json_with_retry(
+        client,
+        f"{GECKO}/networks/solana/new_pools?include=base_token,dex",
+        attempts=2,
+    )
+    if not isinstance(raw, dict) or not isinstance(raw.get("data"), list):
+        raise ValueError("GeckoTerminal returned an unexpected response format.")
+
+    included = {
+        item.get("id"): item.get("attributes", {})
+        for item in raw.get("included", [])
+        if isinstance(item, dict) and item.get("type") == "token"
+    }
+    tokens = []
+    for pool in raw["data"]:
+        if not isinstance(pool, dict):
+            continue
+        attrs = pool.get("attributes") or {}
+        rel = pool.get("relationships") or {}
+        base_rel = (rel.get("base_token") or {}).get("data") or {}
+        mint = str(base_rel.get("id") or "")
+        if mint.startswith("solana_"):
+            mint = mint[len("solana_"):]
+        if not mint:
+            continue
+        base = included.get(base_rel.get("id"), {})
+        txns = attrs.get("transactions") or {}
+        h24 = txns.get("h24") or {}
+        volume = attrs.get("volume_usd") or {}
+        changes = attrs.get("price_change_percentage") or {}
+        try:
+            liquidity = float(attrs.get("reserve_in_usd") or 0)
+            volume_24h = float(volume.get("h24") or 0)
+            buys = int(h24.get("buys") or 0)
+            sells = int(h24.get("sells") or 0)
+            change = float(changes.get("h24") or 0)
+        except (TypeError, ValueError):
+            continue
+        import math
+        liq_score = min(100.0, max(0.0, (math.log10(max(liquidity, 1) / 100) / 4) * 100))
+        turnover_score = min(100.0, max(0.0, (volume_24h / max(liquidity, 1)) * 50))
+        total = buys + sells
+        flow_score = buys / total * 100 if total else 50.0
+        momentum_score = min(100.0, max(0.0, 50.0 + change * 2.0))
+        score = round(liq_score * .30 + turnover_score * .25 + flow_score * .25 + momentum_score * .20, 1)
+        pool_address = attrs.get("address")
+        tokens.append({
+            "name": base.get("name") or attrs.get("name") or "Unknown",
+            "symbol": base.get("symbol") or "—",
+            "address": mint,
+            "pair_address": pool_address,
+            "url": f"https://www.geckoterminal.com/solana/pools/{pool_address}" if pool_address else None,
+            "dex": "GeckoTerminal",
+            "price_usd": attrs.get("base_token_price_usd"),
+            "liquidity_usd": liquidity,
+            "volume_24h_usd": volume_24h,
+            "opportunity_score": score,
+            "score_components": {"liquidity": round(liq_score, 1), "turnover": round(turnover_score, 1), "buy_flow": round(flow_score, 1), "momentum": round(momentum_score, 1)},
+            "price_change_24h_pct": changes.get("h24"),
+            "buys_24h": buys,
+            "sells_24h": sells,
+            "boost_amount": 0,
+            "boost_total": 0,
+            "image": base.get("image_url"),
+            "pair_created_at": attrs.get("pool_created_at"),
+            "security_status": "Not assessed",
+            "source": "GeckoTerminal"
+        })
+    tokens.sort(key=lambda item: item["opportunity_score"], reverse=True)
+    return tokens
+
+
 async def discover():
     now = time.time()
     if now - _cache["at"] < CACHE_TTL and _cache["data"]:
@@ -133,10 +208,32 @@ async def discover():
         profiles_ok = not isinstance(profile_result, BaseException)
         boosts_ok = not isinstance(boost_result, BaseException)
         if not profiles_ok and not boosts_ok:
-            raise HTTPException(
-                status_code=502,
-                detail="Both public discovery feeds are temporarily unavailable. Please retry shortly."
-            )
+            try:
+                gecko_tokens = await discover_gecko(client)
+                _cache["at"] = now
+                _cache["data"] = gecko_tokens
+                _cache["sources"] = {"geckoterminal_new_pools": "available", "dexscreener": "unavailable"}
+                return gecko_tokens, False, _cache["sources"]
+            except Exception as gecko_exc:
+                def reason(exc):
+                    if isinstance(exc, httpx.HTTPStatusError):
+                        return f"HTTP {exc.response.status_code}"
+                    if isinstance(exc, httpx.TimeoutException):
+                        return "timeout"
+                    if isinstance(exc, httpx.RequestError):
+                        return "network error"
+                    return type(exc).__name__
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "message": "DexScreener and GeckoTerminal discovery feeds are unavailable.",
+                        "dexscreener": {
+                            "profiles": reason(profile_result),
+                            "boosts": reason(boost_result)
+                        },
+                        "geckoterminal": reason(gecko_exc)
+                    }
+                ) from gecko_exc
 
         profiles = profile_result if profiles_ok and isinstance(profile_result, list) else []
         boosts = boost_result if boosts_ok and isinstance(boost_result, list) else []
