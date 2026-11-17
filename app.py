@@ -33,6 +33,19 @@ async def get_json(client: httpx.AsyncClient, url: str):
     return response.json()
 
 
+async def get_json_with_retry(client: httpx.AsyncClient, url: str, attempts: int = 2):
+    """Retry a public feed briefly; never substitute fabricated or stale values."""
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            return await get_json(client, url)
+        except (httpx.HTTPError, ValueError) as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                await asyncio.sleep(0.5 * (attempt + 1))
+    raise last_error
+
+
 async def enrich_token(client: httpx.AsyncClient, token: dict):
     address = token.get("tokenAddress")
     if not address:
@@ -103,21 +116,35 @@ async def enrich_token(client: httpx.AsyncClient, token: dict):
 async def discover():
     now = time.time()
     if now - _cache["at"] < CACHE_TTL and _cache["data"]:
-        return _cache["data"], True
+        return _cache["data"], True, _cache.get("sources", {})
 
     timeout = httpx.Timeout(12.0, connect=6.0)
     headers = {"User-Agent": "CryptoEarlyDiscoveryAI/0.2"}
     async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
         try:
-            profiles, boosts = await asyncio.gather(
-                get_json(client, f"{DEX}/token-profiles/latest/v1"),
-                get_json(client, f"{DEX}/token-boosts/latest/v1"),
+            profile_result, boost_result = await asyncio.gather(
+                get_json_with_retry(client, f"{DEX}/token-profiles/latest/v1"),
+                get_json_with_retry(client, f"{DEX}/token-boosts/latest/v1"),
+                return_exceptions=True,
             )
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail="The public market-data provider is temporarily unavailable.") from exc
+
+        profiles_ok = not isinstance(profile_result, BaseException)
+        boosts_ok = not isinstance(boost_result, BaseException)
+        if not profiles_ok and not boosts_ok:
+            raise HTTPException(
+                status_code=502,
+                detail="Both public discovery feeds are temporarily unavailable. Please retry shortly."
+            )
+
+        profiles = profile_result if profiles_ok and isinstance(profile_result, list) else []
+        boosts = boost_result if boosts_ok and isinstance(boost_result, list) else []
+        sources = {
+            "token_profiles": "available" if profiles_ok and isinstance(profile_result, list) else "unavailable",
+            "token_boosts": "available" if boosts_ok and isinstance(boost_result, list) else "unavailable",
+        }
 
         combined = {}
-        for item in (profiles or []) + (boosts or []):
+        for item in profiles + boosts:
             if isinstance(item, dict) and item.get("chainId") == "solana":
                 address = item.get("tokenAddress")
                 if address:
@@ -133,7 +160,8 @@ async def discover():
     tokens.sort(key=lambda item: item["opportunity_score"], reverse=True)
     _cache["at"] = now
     _cache["data"] = tokens
-    return tokens, False
+    _cache["sources"] = sources
+    return tokens, False, sources
 
 
 @app.get("/api/health")
@@ -146,12 +174,13 @@ async def api_discover(
     min_liquidity: float = Query(0, ge=0),
     limit: int = Query(30, ge=1, le=35)
 ):
-    tokens, cached = await discover()
+    tokens, cached, data_sources = await discover()
     filtered = [t for t in tokens if t["liquidity_usd"] >= min_liquidity]
     return {
         "chain": "Solana",
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "cached": cached,
+        "data_sources": data_sources,
         "count": len(filtered[:limit]),
         "tokens": filtered[:limit],
         "disclaimer": "Discovery data is informational, can be delayed or incomplete, and is not a buy recommendation."
